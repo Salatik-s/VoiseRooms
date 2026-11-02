@@ -117,8 +117,8 @@ services:
       BACKEND_URL: http://backend:3000
       BOT_PROXY_URL: ${BOT_PROXY_URL:-}
     depends_on: { backend: { condition: service_healthy } }
-    mem_limit: 128m
-    memswap_limit: 256m
+    mem_limit: 192m
+    memswap_limit: 384m
     cpus: 0.30
     pids_limit: 64
     read_only: true

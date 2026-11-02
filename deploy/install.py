@@ -16,6 +16,7 @@ from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
 from acme import prepare_webroot, verify_http_challenge
+from bot_ready import wait_for_bot
 from preflight import DOMAIN, IP, check
 from prepare import private_write, read_env, render
 
@@ -351,35 +352,9 @@ def install(upload, agree_terms, publish, email):
     wait_url("https://" + DOMAIN + "/", expected=b"<title>VoiceRooms</title>")
     verify_public_flow("https://" + DOMAIN)
     call(command + ["up", "-d", "bot"])
-    # Verify the real provider from the bot container without printing the token.
-    probe = """import asyncio,os
-from aiogram import Bot
-from aiogram.client.session.aiohttp import AiohttpSession
-async def check():
-    s=AiohttpSession(proxy=os.getenv("BOT_PROXY_URL") or None)
-    b=Bot(os.environ["BOT_TOKEN"],session=s)
-    try:
-        me=await b.get_me()
-        assert me.username=="vidagram_bot"
-        print("Telegram provider: ok")
-    finally:
-        await s.close()
-asyncio.run(check())
-"""
-    call(command + ["exec", "-T", "bot", "python", "-c", probe])
-    for _ in range(30):
-        logs = capture(command + ["logs", "--no-color", "--tail", "50", "bot"])
-        if "TelegramConflictError" in logs or "Conflict:" in logs:
-            raise RuntimeError(
-                "Another process is polling this bot token. VoiceRooms is running; stop the old poller before retrying."
-            )
-        if "VoiceRooms bot ready" in logs:
-            break
-        time.sleep(2)
-    else:
-        raise RuntimeError(
-            "The bot did not finish startup. Review its status; secrets are redacted from its logs."
-        )
+    # main() calls getMe and checks the username before reporting readiness.
+    # A second aiogram process here can exhaust the small container's memory.
+    wait_for_bot(command)
     current = Path("/opt/voicerooms/current")
     temporary = current.with_name(".current-" + str(time.time_ns()))
     temporary.symlink_to(ROOT, target_is_directory=True)

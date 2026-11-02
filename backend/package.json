@@ -1,0 +1,23 @@
+{
+  "name": "voicerooms-backend",
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "start": "node src/index.js",
+    "dev": "node --watch src/index.js",
+    "prisma:generate": "npx prisma generate",
+    "prisma:migrate": "npx prisma migrate deploy"
+  },
+  "dependencies": {
+    "@fastify/cors": "^11.4.0",
+    "@fastify/multipart": "^9.4.0",
+    "@fastify/rate-limit": "^10.3.0",
+    "@prisma/client": "5.22.0",
+    "dotenv": "^16.4.5",
+    "fastify": "^5.12.8",
+    "livekit-server-sdk": "^2.19.2"
+  },
+  "devDependencies": {
+    "prisma": "5.22.0"
+  }
+}

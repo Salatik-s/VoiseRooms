@@ -1,0 +1,98 @@
+// Prisma schema для VoiceRooms
+generator client {
+  provider      = "prisma-client-js"
+  binaryTargets = ["native", "debian-openssl-3.0.x", "debian-openssl-1.1.x"]
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// Пользователи Telegram
+model User {
+  id            Int       @id @default(autoincrement())
+  tgId          BigInt    @unique // Telegram ID
+  username      String?   // @username
+  firstName     String?
+  lastName      String?
+  displayName   String?   // Отображаемое имя в комнате
+  lang          String?   // язык пользователя
+  createdAt     DateTime  @default(now())
+  lastSeenAt    DateTime  @default(now()) @updatedAt
+
+  rooms         Room[]    // комнаты, где пользователь был создателем
+  connections   Connection[]
+}
+
+// Комнаты
+model Room {
+  id              Int       @id @default(autoincrement())
+  code            String    @unique // код комнаты (8 символов) или имя постоянной
+  name            String    // название комнаты
+  isPersistent    Boolean   @default(false) // постоянная или временная
+  isActive        Boolean   @default(true) // активна ли
+  ownerTgId       BigInt?   // Telegram ID создателя (null для постоянных)
+  maxParticipants Int       @default(20) // лимит участников
+  createdAt       DateTime  @default(now())
+  expiresAt       DateTime? // когда удалить временную комнату
+
+  owner           User?     @relation(fields: [ownerTgId], references: [tgId])
+  connections     Connection[]
+  participantNames RoomParticipantName[]
+  fileUploads     FileUpload[]
+  encrypted       Boolean @default(true)
+  accessHash      String?
+  bans            RoomBan[]
+}
+
+model RoomBan {
+  id Int @id @default(autoincrement())
+  roomId Int
+  identity String
+  room Room @relation(fields: [roomId], references: [id], onDelete: Cascade)
+  @@unique([roomId, identity])
+}
+
+// Подключения (статистика)
+model Connection {
+  id            Int       @id @default(autoincrement())
+  roomId        Int
+  userId        BigInt
+  success       Boolean   // успешно или нет
+  ip            String?   // IP адрес
+  country       String?   // страна по GeoIP
+  createdAt     DateTime  @default(now())
+
+  room          Room      @relation(fields: [roomId], references: [id])
+  user          User      @relation(fields: [userId], references: [tgId])
+}
+
+// Имена участников в комнатах (серверное хранение имён)
+model RoomParticipantName {
+  id            Int       @id @default(autoincrement())
+  roomId        Int
+  identity      String    // HMAC-псевдоним участника внутри комнаты
+  displayName   String    // отображаемое имя
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @default(now()) @updatedAt
+
+  room          Room      @relation(fields: [roomId], references: [id])
+
+  @@unique([roomId, identity])
+}
+
+// Загрузки файлов (5-минутный TTL)
+model FileUpload {
+  id            Int       @id @default(autoincrement())
+  roomId        Int
+  identity      String    // кто загрузил
+  fileName      String    // оригинальное имя файла
+  fileType      String    // mime type
+  fileSize      Int       // размер в байтах
+  storagePath   String    // путь к файлу на диске
+  expiresAt     DateTime  // когда удалить (5 минут после загрузки)
+  createdAt     DateTime  @default(now())
+
+  room          Room      @relation(fields: [roomId], references: [id])
+}

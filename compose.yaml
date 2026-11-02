@@ -1,0 +1,132 @@
+name: voicerooms
+x-log: &log
+  driver: local
+  options: { max-size: "5m", max-file: "3" }
+services:
+  postgres:
+    image: postgres:16-bookworm
+    environment:
+      POSTGRES_DB: voicerooms
+      POSTGRES_USER: voicerooms
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set private environment}
+    command:
+      [
+        postgres,
+        -c,
+        shared_buffers=32MB,
+        -c,
+        max_connections=20,
+        -c,
+        work_mem=1MB,
+      ]
+    volumes: [db_data:/var/lib/postgresql/data]
+    mem_limit: 160m
+    memswap_limit: 320m
+    cpus: 0.40
+    pids_limit: 64
+    restart: unless-stopped
+    healthcheck:
+      {
+        test: [CMD-SHELL, "pg_isready -U voicerooms -d voicerooms"],
+        interval: 5s,
+        timeout: 3s,
+        retries: 20,
+      }
+    logging: *log
+  livekit:
+    image: livekit/livekit-server:v1.13.11
+    user: "10001:10001"
+    command: [--config, /etc/livekit.yaml]
+    volumes: [./livekit.yaml:/etc/livekit.yaml:ro]
+    ports:
+      ["127.0.0.1:7880:7880", "7881:7881/tcp", "50300-50350:50300-50350/udp"]
+    mem_limit: 256m
+    memswap_limit: 512m
+    cpus: 0.75
+    pids_limit: 128
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    restart: unless-stopped
+    logging: *log
+  backend:
+    build: ./backend
+    image: voicerooms-backend:local
+    environment:
+      DATABASE_URL: ${DATABASE_URL:?Set private environment}
+      BOT_TOKEN: ${BOT_TOKEN:?Set private environment}
+      OWNER_TG_ID: ${OWNER_TG_ID:?Set private environment}
+      INTERNAL_KEY: ${INTERNAL_KEY:?Set private environment}
+      LIVEKIT_API_KEY: ${LIVEKIT_API_KEY:?Set private environment}
+      LIVEKIT_API_SECRET: ${LIVEKIT_API_SECRET:?Set private environment}
+      LIVEKIT_HOST: http://livekit:7880
+      LIVEKIT_PUBLIC_URL: wss://${DOMAIN:?Set domain}/livekit/
+      APP_ORIGIN: https://${DOMAIN}
+      MAX_ROOM_PARTICIPANTS: ${MAX_ROOM_PARTICIPANTS:-8}
+      MAX_ACTIVE_ROOMS: 20
+      UPLOADS_DIR: /app/uploads
+    volumes: [uploads:/app/uploads]
+    ports: ["127.0.0.1:3099:3000"]
+    depends_on:
+      {
+        postgres: { condition: service_healthy },
+        livekit: { condition: service_started },
+      }
+    mem_limit: 192m
+    memswap_limit: 384m
+    cpus: 0.50
+    pids_limit: 64
+    read_only: true
+    tmpfs: [/tmp:size=32m]
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    restart: unless-stopped
+    logging: *log
+    healthcheck:
+      {
+        test:
+          [
+            CMD,
+            node,
+            -e,
+            "fetch('http://127.0.0.1:3000/api/ready').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))",
+          ],
+        interval: 15s,
+        timeout: 5s,
+        retries: 5,
+        start_period: 30s,
+      }
+  frontend:
+    build: ./frontend
+    image: voicerooms-frontend:local
+    ports: ["127.0.0.1:5199:5173"]
+    depends_on: { backend: { condition: service_healthy } }
+    mem_limit: 48m
+    memswap_limit: 96m
+    cpus: 0.20
+    pids_limit: 64
+    restart: unless-stopped
+    logging: *log
+  bot:
+    build: ./bot
+    image: voicerooms-bot:local
+    environment:
+      BOT_TOKEN: ${BOT_TOKEN}
+      OWNER_TG_ID: ${OWNER_TG_ID}
+      INTERNAL_KEY: ${INTERNAL_KEY}
+      DOMAIN: ${DOMAIN}
+      BACKEND_URL: http://backend:3000
+      BOT_PROXY_URL: ${BOT_PROXY_URL:-}
+    depends_on: { backend: { condition: service_healthy } }
+    mem_limit: 128m
+    memswap_limit: 256m
+    cpus: 0.30
+    pids_limit: 64
+    read_only: true
+    tmpfs: [/tmp:size=16m]
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    restart: unless-stopped
+    logging: *log
+volumes:
+  db_data:
+  uploads:

@@ -1,0 +1,11 @@
+.git
+.qa
+.venv
+.generated
+android
+**/node_modules
+**/dist
+**/.env*
+**/uploads
+*.log
+run.py

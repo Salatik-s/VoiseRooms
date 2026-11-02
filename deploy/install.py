@@ -15,6 +15,7 @@ from pathlib import Path
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
+from acme import prepare_webroot, verify_http_challenge
 from preflight import DOMAIN, IP, check
 from prepare import private_write, read_env, render
 
@@ -298,9 +299,7 @@ def install(upload, agree_terms, publish, email):
     if shutil.which("ufw") and "Status: active" in capture(["ufw", "status"]):
         for rule in ["80/tcp", "443/tcp", "7881/tcp", "50300:50350/udp"]:
             call(["ufw", "allow", rule])
-    Path("/var/www/letsencrypt/.well-known/acme-challenge").mkdir(
-        parents=True, exist_ok=True
-    )
+    prepare_webroot("/var/www/letsencrypt")
     acme = "location ^~ /.well-known/acme-challenge/ { root /var/www/letsencrypt; }"
     proxy_block = 'location / { proxy_pass http://127.0.0.1:5199; proxy_set_header Host $host; proxy_set_header X-Forwarded-Proto https; }\nlocation /livekit/ { proxy_pass http://127.0.0.1:7880/; proxy_http_version 1.1; proxy_set_header Upgrade $http_upgrade; proxy_set_header Connection "upgrade"; proxy_read_timeout 3600s; }'
     common = (
@@ -313,6 +312,7 @@ def install(upload, agree_terms, publish, email):
     certificate = Path("/etc/letsencrypt/live") / DOMAIN / "fullchain.pem"
     if not certificate.exists():
         nginx_apply(common)
+        verify_http_challenge("/var/www/letsencrypt", DOMAIN)
         cert = [
             "certbot",
             "certonly",
@@ -327,7 +327,9 @@ def install(upload, agree_terms, publish, email):
         ]
         if agree_terms:
             cert += ["--agree-tos"]
-        call(cert)
+        # Public validation files must stay readable even when SSH bootstrap uses 077.
+        # Certbot explicitly protects its private keys independently of this umask.
+        call(cert, umask=0o022)
     https = (
         common
         + "server { listen 443 ssl; listen [::]:443 ssl; server_name "

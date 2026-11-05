@@ -1,6 +1,7 @@
 import UIKit
 import WebKit
 import AVFoundation
+import Security
 
 @main
 final class AppDelegate: UIResponder, UIApplicationDelegate {
@@ -27,13 +28,44 @@ final class SceneDelegate: UIResponder, UIWindowSceneDelegate {
     }
 }
 
-final class VoiceViewController: UIViewController, WKNavigationDelegate, WKUIDelegate {
+private final class SessionVault {
+    private let query: [String: Any] = [kSecClass as String:kSecClassGenericPassword,kSecAttrService as String:"ru.voicerooms.session",kSecAttrAccount as String:"signed-session"]
+    static func valid(_ value: String) -> Bool {
+        if value.isEmpty { return true }
+        guard value.utf8.count < 4096, value.range(of: "^[A-Za-z0-9_-]+\\.[A-Za-z0-9_-]{43}$", options: .regularExpression) != nil,
+              let part=value.split(separator:".").first else { return false }
+        var base=String(part).replacingOccurrences(of:"-",with:"+").replacingOccurrences(of:"_",with:"/")
+        base += String(repeating:"=",count:(4-base.count%4)%4)
+        guard let data=Data(base64Encoded:base), let body=(try? JSONSerialization.jsonObject(with:data)) as? [String:Any], let expiry=body["exp"] as? Double else { return false }
+        return expiry > Date().timeIntervalSince1970 * 1000
+    }
+    func read() -> String {
+        var request=query; request[kSecReturnData as String]=true;request[kSecMatchLimit as String]=kSecMatchLimitOne
+        var result:CFTypeRef?
+        guard SecItemCopyMatching(request as CFDictionary,&result)==errSecSuccess,let data=result as? Data,let value=String(data:data,encoding:.utf8),Self.valid(value) else { return "" }
+        return value
+    }
+    func save(_ token:String) {
+        guard Self.valid(token) else { return }
+        SecItemDelete(query as CFDictionary)
+        if token.isEmpty { return }
+        var request=query;request[kSecValueData as String]=Data(token.utf8);request[kSecAttrAccessible as String]=kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
+        SecItemAdd(request as CFDictionary,nil)
+    }
+}
+private final class ScriptRelay:NSObject,WKScriptMessageHandler {
+    weak var target:VoiceViewController?
+    func userContentController(_ userContentController:WKUserContentController,didReceive message:WKScriptMessage){target?.receive(message)}
+}
+final class VoiceViewController: UIViewController, WKNavigationDelegate, WKUIDelegate, UIDocumentPickerDelegate {
     private let origin = URL(string: "https://voise.24projects.ru/")!
     private var web: WKWebView!
     private let errorView = UIStackView()
     private let progress = UIActivityIndicatorView(style: .large)
     private var lastURL: URL?
     private var pendingInvitation: URL?
+    private let vault=SessionVault()
+    private var exportedURL:URL?
 
     override func viewDidLoad() {
         super.viewDidLoad()
@@ -42,6 +74,13 @@ final class VoiceViewController: UIViewController, WKNavigationDelegate, WKUIDel
         configuration.allowsInlineMediaPlayback = true
         configuration.mediaTypesRequiringUserActionForPlayback = []
         configuration.websiteDataStore = .default()
+        let relay=ScriptRelay();relay.target=self
+        configuration.userContentController.add(relay,name:"VoiceRoomsNativeHost")
+        let encoded=(try? JSONSerialization.data(withJSONObject:[vault.read()])).flatMap { String(data:$0,encoding:.utf8) } ?? "[\"\"]"
+        let bridge="""
+        (()=>{if(location.origin==='https://voise.24projects.ru'){const saved=\(encoded)[0];if(saved&&!sessionStorage.getItem('vr-session'))sessionStorage.setItem('vr-session',saved);window.VoiceRoomsNative=Object.freeze({saveSession:token=>webkit.messageHandlers.VoiceRoomsNativeHost.postMessage({kind:'session',token}),callState:(active,microphone)=>webkit.messageHandlers.VoiceRoomsNativeHost.postMessage({kind:'call',active:!!active,microphone:!!microphone}),saveFile:(name,base64,mime)=>webkit.messageHandlers.VoiceRoomsNativeHost.postMessage({kind:'file',name,base64,mime})});}})();
+        """
+        configuration.userContentController.addUserScript(WKUserScript(source:bridge,injectionTime:.atDocumentStart,forMainFrameOnly:true))
         web = WKWebView(frame: .zero, configuration: configuration)
         web.isOpaque = false
         web.backgroundColor = view.backgroundColor
@@ -65,6 +104,36 @@ final class VoiceViewController: UIViewController, WKNavigationDelegate, WKUIDel
         NSLayoutConstraint.activate([progress.centerXAnchor.constraint(equalTo: view.centerXAnchor), progress.centerYAnchor.constraint(equalTo: view.centerYAnchor)])
         load(pendingInvitation ?? initialURL())
     }
+    fileprivate func receive(_ message:WKScriptMessage) {
+        guard message.frameInfo.isMainFrame,message.frameInfo.securityOrigin.protocol=="https",message.frameInfo.securityOrigin.host==origin.host,
+              message.frameInfo.securityOrigin.port==443 || message.frameInfo.securityOrigin.port==0,
+              let current=web.url,trusted(current),let body=message.body as? [String:Any],let kind=body["kind"] as? String else { return }
+        if kind=="session",let token=body["token"] as? String {vault.save(token)}
+        if kind=="call",let active=body["active"] as? Bool,let microphone=body["microphone"] as? Bool {
+            let audio=AVAudioSession.sharedInstance()
+            if active {
+                if microphone {try? audio.setCategory(.playAndRecord,mode:.voiceChat,options:[.defaultToSpeaker,.allowBluetooth])}
+                else {try? audio.setCategory(.playback,mode:.spokenAudio)}
+                try? audio.setActive(true)
+            } else {try? audio.setActive(false,options:.notifyOthersOnDeactivation)}
+        }
+        if kind=="file",let name=body["name"] as? String,let encoded=body["base64"] as? String,encoded.utf8.count<=15_000_000,let data=Data(base64Encoded:encoded),data.count<=10*1024*1024 {
+            let raw=String(name.replacingOccurrences(of:"\\",with:"/").split(separator:"/").last ?? "Файл")
+            let filtered=String(raw.unicodeScalars.filter { !CharacterSet.controlCharacters.contains($0) })
+            let safe=(filtered.isEmpty || filtered=="." || filtered=="..") ? "Файл" : String(filtered.prefix(150))
+            let directory=FileManager.default.temporaryDirectory.appendingPathComponent("VoiceRooms-"+UUID().uuidString,isDirectory:true)
+            do {
+                try FileManager.default.createDirectory(at:directory,withIntermediateDirectories:true)
+                let url=directory.appendingPathComponent(safe)
+                try data.write(to:url,options:.atomic);exportedURL=url
+                let picker=UIDocumentPickerViewController(forExporting:[url],asCopy:true);picker.delegate=self;present(picker,animated:true)
+            } catch {showFileError()}
+        }
+    }
+    private func showFileError(){let alert=UIAlertController(title:"Не удалось сохранить файл",message:"Попробуйте ещё раз или откройте комнату в браузере.",preferredStyle:.alert);alert.addAction(UIAlertAction(title:"Понятно",style:.default));present(alert,animated:true)}
+    private func clearExport(){if let url=exportedURL {try? FileManager.default.removeItem(at:url.deletingLastPathComponent())};exportedURL=nil}
+    func documentPickerWasCancelled(_ controller:UIDocumentPickerViewController){clearExport()}
+    func documentPicker(_ controller:UIDocumentPickerViewController,didPickDocumentsAt urls:[URL]){clearExport()}
     private func initialURL() -> URL {
         #if DEBUG && targetEnvironment(simulator)
         let args = ProcessInfo.processInfo.arguments

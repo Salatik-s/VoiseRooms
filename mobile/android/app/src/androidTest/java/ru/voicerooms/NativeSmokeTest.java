@@ -55,12 +55,49 @@ public class NativeSmokeTest {
     fail("Expected " + expected + " but got " + last);
   }
 
-  private void screenshot(String name) {
+  private void screenshot(String name) throws Exception {
     UiDevice device = UiDevice.getInstance(InstrumentationRegistry.getInstrumentation());
     File dir =
         InstrumentationRegistry.getInstrumentation().getTargetContext().getExternalFilesDir(null);
     assertNotNull(dir);
-    assertTrue(device.takeScreenshot(new File(dir, name + ".png")));
+    File screenshot = new File(dir, name + ".png");
+    assertTrue(device.takeScreenshot(screenshot));
+    java.net.HttpURLConnection upload =
+        (java.net.HttpURLConnection)
+            new java.net.URL(TrustedOrigin.TEST_ORIGIN + "/__native_test_screenshot?name=" + name)
+                .openConnection();
+    try {
+      upload.setRequestMethod("POST");
+      upload.setDoOutput(true);
+      upload.setConnectTimeout(10000);
+      upload.setReadTimeout(10000);
+      upload.setRequestProperty("Content-Type", "image/png");
+      try (java.io.OutputStream stream = upload.getOutputStream()) {
+        java.nio.file.Files.copy(screenshot.toPath(), stream);
+      }
+      assertEquals("Native screenshot was not collected", 201, upload.getResponseCode());
+    } finally {
+      upload.disconnect();
+    }
+  }
+
+  @Test
+  public void sessionStorageUsesAndroidKeystoreAndSupportsLogout() throws Exception {
+    android.content.Context context =
+        InstrumentationRegistry.getInstrumentation().getTargetContext();
+    SessionStore store = new SessionStore(context);
+    store.clear();
+    String token = "eyJpZCI6LTF9.emulator-test-signature";
+    store.save(token);
+    assertEquals(token, store.read());
+    assertFalse(
+        context
+            .getSharedPreferences("voice_session", android.content.Context.MODE_PRIVATE)
+            .getAll()
+            .toString()
+            .contains(token));
+    store.clear();
+    assertEquals("", store.read());
   }
 
   @Test

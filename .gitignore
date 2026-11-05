@@ -25,3 +25,5 @@ __pycache__/
 
 .impeccable/runtime/
 .impeccable/copy-review.txt
+
+*.ipa

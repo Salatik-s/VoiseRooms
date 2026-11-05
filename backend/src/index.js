@@ -712,6 +712,7 @@ export async function buildApp({
     await reopenDueRooms();
     const records = await prisma.room.findMany({
         where: { isPersistent: true },
+        orderBy: { id: "asc" },
       }),
       active = records.filter((r) => isActive(r)),
       live = active.length ? await lk.listRooms(active.map((r) => r.code)) : [];
@@ -730,6 +731,7 @@ export async function buildApp({
     const records = (
         await prisma.room.findMany({
           where: { OR: [{ isActive: true }, { isPersistent: true }] },
+          orderBy: { id: "asc" },
         })
       ).filter((r) => isActive(r) || pendingRestart(r)),
       active = records.filter((r) => isActive(r)),

@@ -2,29 +2,32 @@ name: Android app verification
 on:
   push:
     paths:
-      - 'mobile/android/**'
-      - 'frontend/**'
-      - '.github/workflows/mobile-android.yml'
+      - "mobile/android/**"
+      - "frontend/**"
+      - ".github/workflows/mobile-android.yml"
   workflow_dispatch:
 permissions:
   contents: read
 jobs:
   android:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 35
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: '22'
+          node-version: "22"
           cache: npm
           cache-dependency-path: frontend/package-lock.json
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
-          java-version: '17'
+          java-version: "17"
           cache: gradle
       - uses: android-actions/setup-android@v3
+        with:
+          packages: platform-tools
+          log-accepted-android-sdk-licenses: false
       - name: Install Android build tools
         run: sdkmanager 'platforms;android-35' 'build-tools;34.0.0' 'platform-tools'
       - name: Build and unit-test
@@ -56,3 +59,4 @@ jobs:
             mobile/android/app/build/reports/tests/
             mobile/android/app/build/reports/androidTests/
             mobile/android/app/build/outputs/androidTest-results/
+            mobile/android/phone-screenshots/

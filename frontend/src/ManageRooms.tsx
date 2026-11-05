@@ -146,14 +146,22 @@ export default function ManageRooms({
               <div className="room-filter" role="group" aria-label="Тип комнат">
                 <button
                   aria-pressed={filter === "public"}
-                  onClick={() => setFilter("public")}
+                  onClick={() => {
+                    setFilter("public");
+                    setNotice("");
+                    setError("");
+                  }}
                 >
                   <Globe size={16} />
                   Публичные
                 </button>
                 <button
                   aria-pressed={filter === "private"}
-                  onClick={() => setFilter("private")}
+                  onClick={() => {
+                    setFilter("private");
+                    setNotice("");
+                    setError("");
+                  }}
                 >
                   <LockKeyhole size={16} />
                   Приватные

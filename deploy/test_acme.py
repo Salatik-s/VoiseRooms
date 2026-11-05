@@ -5,6 +5,7 @@ import stat
 import tempfile
 import threading
 import unittest
+from unittest import mock
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
@@ -24,6 +25,31 @@ class RefusingHandler(QuietHandler):
 
 
 class AcmeTests(unittest.TestCase):
+    def test_retries_only_transient_windows_file_locks(self):
+        locked = PermissionError("sharing violation")
+        locked.winerror = 32
+        probe = mock.Mock()
+        probe.unlink.side_effect = [locked, None]
+        with mock.patch.object(acme.time, "sleep") as pause:
+            acme.remove_probe(probe)
+        self.assertEqual(probe.unlink.call_count, 2)
+        pause.assert_called_once_with(0.05)
+
+    def test_cleanup_does_not_hide_real_permissions_or_persistent_locks(self):
+        probe = mock.Mock()
+        probe.unlink.side_effect = PermissionError("access denied")
+        with mock.patch.object(acme.time, "sleep") as pause:
+            with self.assertRaises(PermissionError):
+                acme.remove_probe(probe)
+            pause.assert_not_called()
+        locked = PermissionError("sharing violation")
+        locked.winerror = 32
+        probe.unlink.side_effect = locked
+        with mock.patch.object(acme.time, "sleep"):
+            with self.assertRaises(PermissionError):
+                acme.remove_probe(probe, attempts=3)
+        self.assertEqual(probe.unlink.call_count, 4)
+
     @unittest.skipIf(os.name == "nt", "POSIX permissions regression runs on Linux CI")
     def test_repairs_existing_private_directories_under_umask_077(self):
         with tempfile.TemporaryDirectory() as folder:

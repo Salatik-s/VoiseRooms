@@ -48,8 +48,11 @@ jobs:
           UDID=$(xcrun simctl list devices available --json | python3 -c 'import json,sys; d=json.load(sys.stdin); print(next(x["udid"] for a in d["devices"].values() for x in a if "iPhone" in x["name"] and x.get("isAvailable")))')
           xcrun simctl boot "$UDID" || true
           xcrun simctl bootstatus "$UDID" -b
-          xcodebuild -project mobile/ios/VoiceRooms.xcodeproj -scheme VoiceRooms -configuration Debug -destination "platform=iOS Simulator,id=$UDID" -derivedDataPath build/simulator -resultBundlePath build/VoiceRooms.xcresult test > test-ios.log 2>&1 || { tail -100 test-ios.log; exit 1; }
-          xcrun simctl io "$UDID" screenshot build/iphone-final.png
+          TEST_STATUS=0
+          xcodebuild -project mobile/ios/VoiceRooms.xcodeproj -scheme VoiceRooms -configuration Debug -destination "platform=iOS Simulator,id=$UDID" -derivedDataPath build/simulator -resultBundlePath build/VoiceRooms.xcresult test > test-ios.log 2>&1 || TEST_STATUS=$?
+          xcrun simctl io "$UDID" screenshot build/iphone-final.png || true
+          xcrun xcresulttool export attachments --path build/VoiceRooms.xcresult --output-path build/ios-attachments || true
+          if [ "$TEST_STATUS" -ne 0 ]; then tail -100 test-ios.log; exit "$TEST_STATUS"; fi
       - name: Upload iPhone test evidence
         if: always()
         uses: actions/upload-artifact@v4
@@ -57,6 +60,7 @@ jobs:
           name: VoiceRooms-iPhone-QA
           path: |
             build/iphone-final.png
+            build/ios-attachments/
             build/VoiceRooms.xcresult
             build-ios.log
             test-ios.log

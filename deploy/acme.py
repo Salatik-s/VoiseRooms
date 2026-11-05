@@ -1,6 +1,7 @@
 """Public HTTP-01 directory setup, independent of the private upload umask."""
 
 import secrets
+import time
 from pathlib import Path
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
@@ -17,6 +18,19 @@ def prepare_webroot(root):
         directory.mkdir(mode=0o755, parents=True, exist_ok=True)
         directory.chmod(0o755)
     return challenge
+
+
+def remove_probe(probe, attempts=10, pause=0.05):
+    for attempt in range(attempts):
+        try:
+            probe.unlink(missing_ok=True)
+            return
+        except PermissionError as error:
+            # Windows may briefly keep a completed HTTP response's file handle open.
+            # Only sharing/locking violations are transient; real permission failures remain errors.
+            if getattr(error, "winerror", None) not in {32, 33} or attempt + 1 == attempts:
+                raise
+            time.sleep(pause)
 
 
 def verify_http_challenge(root, domain, local_origin="http://127.0.0.1"):
@@ -36,6 +50,7 @@ def verify_http_challenge(root, domain, local_origin="http://127.0.0.1"):
                     if response.status != 200 or response.read(4096) != payload:
                         raise RuntimeError("ACME HTTP preflight returned unexpected content at " + label)
             except HTTPError as error:
+                error.close()
                 raise RuntimeError(
                     "ACME HTTP preflight failed at " + label + " (HTTP " + str(error.code)
                     + "). Certificate request was not sent; inspect Nginx path permissions and routing."
@@ -43,5 +58,5 @@ def verify_http_challenge(root, domain, local_origin="http://127.0.0.1"):
             except (URLError, TimeoutError):
                 raise RuntimeError("ACME HTTP preflight could not reach " + label + "; certificate request was not sent") from None
     finally:
-        probe.unlink(missing_ok=True)
+        remove_probe(probe)
     print("ACME challenge readable through local Nginx and public HTTP domain")

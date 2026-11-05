@@ -151,7 +151,9 @@ export function RoomControls({
         disabled={pending}
         onClick={() => setConfirmClose(true)}
       >
-        Закрыть комнату для всех
+        {state.isPersistent
+          ? "Перезапустить комнату"
+          : "Закрыть комнату для всех"}
       </button>
       {confirmClose && (
         <div className="close-room-confirm">
@@ -169,7 +171,9 @@ export function RoomControls({
                 setConfirmClose(false);
               }}
             >
-              Закрыть для всех
+              {state.isPersistent
+                ? "Перезапустить комнату"
+                : "Закрыть для всех"}
             </button>
             <button disabled={pending} onClick={() => setConfirmClose(false)}>
               Отмена

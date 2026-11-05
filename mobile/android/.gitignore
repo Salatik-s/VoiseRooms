@@ -4,3 +4,5 @@
 /app/build/
 *.jks
 *.keystore
+
+/phone-screenshots/

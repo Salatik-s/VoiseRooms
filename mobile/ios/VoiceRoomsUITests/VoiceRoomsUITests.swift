@@ -9,10 +9,10 @@ final class VoiceRoomsUITests: XCTestCase {
     }
     func testPhoneCallControlsAndChat() {
         let app = openPreview()
-        let microphone = app.webViews.buttons["Выключить микрофон"]
-        XCTAssertTrue(microphone.exists)
+        let microphone = app.webViews.descendants(matching: .any).matching(NSPredicate(format: "label == %@", "Выключить микрофон")).firstMatch
+        XCTAssertTrue(microphone.waitForExistence(timeout: 10))
         microphone.tap()
-        XCTAssertTrue(app.webViews.buttons["Включить микрофон"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.webViews.descendants(matching: .any).matching(NSPredicate(format: "label == %@", "Включить микрофон")).firstMatch.waitForExistence(timeout: 5))
         app.webViews.buttons["Чат"].tap()
         XCTAssertTrue(app.webViews.staticTexts["Чат комнаты"].waitForExistence(timeout: 5))
         let input = app.webViews.textFields["Сообщение"]

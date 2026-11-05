@@ -119,9 +119,9 @@ export default function Downloads() {
         <section className="install-guide" id="install-iphone">
           <h2>Как установить на iPhone</h2>
           <p>
-            Для IPA понадобится компьютер с Windows или macOS, кабель и ваш
-            Apple ID. Файл скачивается без подписи; Sideloadly подпишет его под
-            ваш аккаунт.
+            Для IPA понадобится iPhone с iOS 17 или новее, компьютер с Windows
+            или macOS, кабель и ваш Apple ID. Файл скачивается без подписи;
+            Sideloadly подпишет его под ваш аккаунт.
           </p>
           <ol>
             <li>

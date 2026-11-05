@@ -53,7 +53,7 @@ jobs:
           arch: x86_64
           profile: pixel_7
           emulator-boot-timeout: 900
-          emulator-options: -no-window -gpu swiftshader_indirect -no-snapshot -noaudio -no-boot-anim -camera-back none
+          emulator-options: -no-window -gpu swiftshader -no-snapshot -noaudio -no-boot-anim -camera-back none
           disable-animations: true
           disable-linux-hw-accel: auto
           script: bash mobile/android/gradlew -p mobile/android connectedDebugAndroidTest --no-daemon

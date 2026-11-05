@@ -11,4 +11,3 @@ E2EE additionally requires GCM publications and enabled frame cryptors. A wrong-
 Run through .github/workflows/media-transport.yml. The fixture refuses execution outside Linux GitHub Actions; it must never be pointed at a local user machine or production. Only JSON counters/results are uploaded. Raw native/server logs, SDP, tokens, ICE credentials and temporary configuration are deleted with the fixture.
 
 A passing run proves native-to-native synthetic transport on that runner. It does not establish browser/native interoperability, microphone/speaker quality, physical Android/iPhone operation, mobile network traversal, or production TURN/TLS configuration.
-

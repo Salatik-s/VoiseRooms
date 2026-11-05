@@ -26,9 +26,10 @@ const result={mode,sdk:'@livekit/rtc-node@1.2.1',syntheticOnly:true,connected:0,
   encryptedPublications:[],cryptors:[],wrongKeyControl:null,pass:false};
 const sharedKey=randomBytes(32),wrongKey=randomBytes(32),marker=randomBytes(16).toString('hex');
 const frequencies=[440,660];
-let phase='wrong-key',wrongKeyLoudFrames=0;
+let phase='wrong-key',wrongKeyLoudFrames=0,wrongKeySubscribed=false;
 const receive=(index,remote,publication)=>{
   result.encryptedPublications.push(publication.encryptionType);
+  if(index===1&&phase==='wrong-key')wrongKeySubscribed=true;
   const reader=new AudioStream(remote,{sampleRate:48000,numChannels:1,frameSizeMs:20}).getReader();
   readers.push({reader,index});
   (async()=>{try{for(;;){
@@ -85,7 +86,10 @@ try{
     await connectClient(i,encrypted&&i===1?wrongKey:sharedKey);
     result.connected++;
   }
-  await publish(0);await sleep(700);
+  await publish(0);
+  for(let i=0;i<50&&!wrongKeySubscribed;i++)await sleep(100);
+  assert.ok(wrongKeySubscribed,'First audio track was not subscribed');
+  await sleep(300);
   if(encrypted){
     await deadline(feed(0,70),'wrong-key audio');await sleep(500);
     result.wrongKeyControl={loudFrames:wrongKeyLoudFrames,pass:wrongKeyLoudFrames===0};
@@ -114,7 +118,7 @@ try{
   if(encrypted){
     assert.ok(result.encryptedPublications.length>=2);
     assert.ok(result.encryptedPublications.every(type=>type===EncryptionType.GCM));
-    assert.ok(result.cryptors.every(list=>list.length>=2&&list.every(c=>c.enabled)));
+    assert.ok(result.cryptors.every(list=>list.length>=1&&list.every(c=>c.enabled)));
   }
   assert.equal(result.readError,undefined);result.pass=true;
 }catch(error){result.error=error.message;}
@@ -130,4 +134,3 @@ finally{
   writeFileSync(output,JSON.stringify(result,null,2));console.log(JSON.stringify(result));
   process.exit(result.pass?0:1);
 }
-

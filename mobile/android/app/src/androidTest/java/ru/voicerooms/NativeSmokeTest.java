@@ -57,6 +57,9 @@ public class NativeSmokeTest {
 
   private void screenshot(String name) throws Exception {
     UiDevice device = UiDevice.getInstance(InstrumentationRegistry.getInstrumentation());
+    // DOM updates can precede the WebView compositor frame on a cold emulator.
+    device.waitForIdle(500, 10000);
+    SystemClock.sleep(500);
     File dir =
         InstrumentationRegistry.getInstrumentation().getTargetContext().getExternalFilesDir(null);
     assertNotNull(dir);
@@ -132,7 +135,11 @@ public class NativeSmokeTest {
 
       assertEquals("false", evaluate(scenario, "document.documentElement.scrollWidth>innerWidth"));
       scenario.onActivity(MainActivity::onBackPressed);
-      InstrumentationRegistry.getInstrumentation().waitForIdleSync();
+      long destroyedBy = SystemClock.elapsedRealtime() + 10000;
+      while (scenario.getState() != androidx.lifecycle.Lifecycle.State.DESTROYED
+          && SystemClock.elapsedRealtime() < destroyedBy) {
+        SystemClock.sleep(100);
+      }
       assertEquals(androidx.lifecycle.Lifecycle.State.DESTROYED, scenario.getState());
     }
   }
@@ -145,7 +152,7 @@ public class NativeSmokeTest {
       UiDevice device = UiDevice.getInstance(InstrumentationRegistry.getInstrumentation());
       assertTrue(device.wait(Until.hasObject(By.text("VoiceRooms временно недоступен")), 20000));
       screenshot("android-error-phone");
-      device.findObject(By.text("Попробовать снова")).click();
+      assertTrue(device.findObject(new UiSelector().text("Попробовать снова")).click());
 
       waitFor(scenario, "document.body.innerText", "Вечерний разговор");
     }

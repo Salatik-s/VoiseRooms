@@ -40,8 +40,18 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
-  if (req.url?.startsWith("/__native_test_failure") && failures++ === 0) {
-    res.writeHead(503, { "content-type": "text/plain; charset=utf-8" });
+  if (req.method === "POST" && req.url === "/__native_test_recover") {
+    failures = 1;
+    res.writeHead(200);
+    res.end("recovered");
+    return;
+  }
+
+  if (req.url?.startsWith("/__native_test_failure") && failures === 0) {
+    res.writeHead(503, {
+      "content-type": "text/plain; charset=utf-8",
+      "cache-control": "no-store",
+    });
     res.end("Проверка восстановления");
     return;
   }

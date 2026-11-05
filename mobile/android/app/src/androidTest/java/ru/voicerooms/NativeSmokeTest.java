@@ -55,6 +55,23 @@ public class NativeSmokeTest {
     fail("Expected " + expected + " but got " + last);
   }
 
+  private void webScreenshot(ActivityScenario<MainActivity> scenario, String name)
+      throws Exception {
+    CountDownLatch rendered = new CountDownLatch(1);
+    scenario.onActivity(
+        activity ->
+            activity.web.postVisualStateCallback(
+                0,
+                new android.webkit.WebView.VisualStateCallback() {
+                  @Override
+                  public void onComplete(long requestId) {
+                    activity.web.postOnAnimation(rendered::countDown);
+                  }
+                }));
+    assertTrue("WebView did not render its updated frame", rendered.await(15, TimeUnit.SECONDS));
+    screenshot(name);
+  }
+
   private void screenshot(String name) throws Exception {
     UiDevice device = UiDevice.getInstance(InstrumentationRegistry.getInstrumentation());
     // DOM updates can precede the WebView compositor frame on a cold emulator.
@@ -109,7 +126,7 @@ public class NativeSmokeTest {
     try (ActivityScenario<MainActivity> scenario = open("/?preview=call")) {
 
       waitFor(scenario, "document.body.innerText", "Вечерний разговор");
-      screenshot("android-call-phone");
+      webScreenshot(scenario, "android-call-phone");
 
       assertEquals(
           "true",
@@ -131,7 +148,7 @@ public class NativeSmokeTest {
           "Array.from(document.querySelectorAll('button')).find(b=>b.textContent.trim()==='Чат').click();true");
 
       waitFor(scenario, "document.body.innerText", "Чат комнаты");
-      screenshot("android-chat-phone");
+      webScreenshot(scenario, "android-chat-phone");
 
       assertEquals("false", evaluate(scenario, "document.documentElement.scrollWidth>innerWidth"));
       scenario.onActivity(MainActivity::onBackPressed);
@@ -150,8 +167,22 @@ public class NativeSmokeTest {
     try (ActivityScenario<MainActivity> scenario = open("/__native_test_failure?preview=call")) {
 
       UiDevice device = UiDevice.getInstance(InstrumentationRegistry.getInstrumentation());
-      assertTrue(device.wait(Until.hasObject(By.text("VoiceRooms временно недоступен")), 20000));
+      boolean errorShown =
+          device.wait(Until.hasObject(By.text("VoiceRooms временно недоступен")), 20000);
       screenshot("android-error-phone");
+      assertTrue("The persistent HTTP 503 must show the Russian native error", errorShown);
+      java.net.HttpURLConnection recover =
+          (java.net.HttpURLConnection)
+              new java.net.URL(TrustedOrigin.TEST_ORIGIN + "/__native_test_recover")
+                  .openConnection();
+      try {
+        recover.setRequestMethod("POST");
+        recover.setConnectTimeout(10000);
+        recover.setReadTimeout(10000);
+        assertEquals(200, recover.getResponseCode());
+      } finally {
+        recover.disconnect();
+      }
       assertTrue(device.findObject(new UiSelector().text("Попробовать снова")).click());
 
       waitFor(scenario, "document.body.innerText", "Вечерний разговор");

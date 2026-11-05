@@ -65,13 +65,61 @@ public class NativeSmokeTest {
                 new android.webkit.WebView.VisualStateCallback() {
                   @Override
                   public void onComplete(long requestId) {
+                    activity
+                        .web
+                        .getViewTreeObserver()
+                        .addOnDrawListener(
+                            new android.view.ViewTreeObserver.OnDrawListener() {
+                              private boolean posted;
+
+                              @Override
+                              public void onDraw() {
+                                if (posted) return;
+                                posted = true;
+                                activity.web.post(
+                                    () -> {
+                                      activity.web.getViewTreeObserver().removeOnDrawListener(this);
+                                      rendered.countDown();
+                                    });
+                              }
+                            });
                     activity.web.invalidate();
-                    activity.web.postOnAnimation(
-                        () -> activity.web.postOnAnimation(rendered::countDown));
                   }
                 }));
     assertTrue("WebView did not render its updated frame", rendered.await(15, TimeUnit.SECONDS));
     screenshot(name);
+  }
+
+  private void tap(ActivityScenario<MainActivity> scenario, String selector) throws Exception {
+    String rect =
+        evaluate(
+            scenario,
+            "(()=>{const r=document.querySelector("
+                + org.json.JSONObject.quote(selector)
+                + ").getBoundingClientRect();return"
+                + " JSON.stringify([r.left+r.width/2,r.top+r.height/2,innerWidth]);})()");
+    org.json.JSONArray point = new org.json.JSONArray(rect);
+    AtomicReference<int[]> position = new AtomicReference<>();
+    scenario.onActivity(
+        activity -> {
+          int[] offset = new int[2];
+          activity.web.getLocationOnScreen(offset);
+          try {
+            double scale = activity.web.getWidth() / point.getDouble(2);
+            position.set(
+                new int[] {
+                  offset[0] + (int) Math.round(point.getDouble(0) * scale),
+                  offset[1] + (int) Math.round(point.getDouble(1) * scale)
+                });
+          } catch (org.json.JSONException e) {
+            throw new AssertionError(e);
+          }
+        });
+    int[] xy = position.get();
+    assertNotNull(xy);
+    assertTrue(
+        "Android tap was not injected",
+        UiDevice.getInstance(InstrumentationRegistry.getInstrumentation()).click(xy[0], xy[1]));
   }
 
   private void screenshot(String name) throws Exception {
@@ -136,18 +184,14 @@ public class NativeSmokeTest {
               scenario,
               "Boolean(document.querySelector('button[aria-label=\"Выключить микрофон\"]'))"));
 
-      evaluate(
-          scenario,
-          "document.querySelector('button[aria-label=\"Выключить микрофон\"]').click();true");
+      tap(scenario, "button[aria-label=\"Выключить микрофон\"]");
 
       waitFor(
           scenario,
           "Boolean(document.querySelector('button[aria-label=\"Включить микрофон\"]'))",
           "true");
 
-      evaluate(
-          scenario,
-          "Array.from(document.querySelectorAll('button')).find(b=>b.textContent.trim()==='Чат').click();true");
+      tap(scenario, "button.chat-control");
 
       waitFor(scenario, "document.body.innerText", "Чат комнаты");
       webScreenshot(scenario, "android-chat-phone");

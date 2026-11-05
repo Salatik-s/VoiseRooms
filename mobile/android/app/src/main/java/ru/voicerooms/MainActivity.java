@@ -85,7 +85,11 @@ public class MainActivity extends Activity {
 
     configureWebView();
 
-    androidx.core.content.ContextCompat.registerReceiver(this, endCall, new IntentFilter(ACTION_END), androidx.core.content.ContextCompat.RECEIVER_NOT_EXPORTED);
+    androidx.core.content.ContextCompat.registerReceiver(
+        this,
+        endCall,
+        new IntentFilter(ACTION_END),
+        androidx.core.content.ContextCompat.RECEIVER_NOT_EXPORTED);
     if (Build.VERSION.SDK_INT >= 33)
       getOnBackInvokedDispatcher()
           .registerOnBackInvokedCallback(
@@ -258,8 +262,9 @@ public class MainActivity extends Activity {
 
           @Override
           public void onPageStarted(WebView view, String url, android.graphics.Bitmap favicon) {
-            clearNativePanel();
-            progress.setVisibility(View.VISIBLE);
+            // HTTP/TLS callbacks can arrive before this callback. Keep their error panel
+            // until an explicit retry; openTrustedUrl already clears it before loading.
+            if (nativePanel == null) progress.setVisibility(View.VISIBLE);
           }
 
           @Override
@@ -572,6 +577,10 @@ public class MainActivity extends Activity {
     handleBack();
   }
 
+  protected boolean canNavigateHistory() {
+    return web.canGoBack();
+  }
+
   private void handleBack() {
     if (activeCall)
       new AlertDialog.Builder(this)
@@ -584,8 +593,11 @@ public class MainActivity extends Activity {
                 finish();
               })
           .show();
-    else if (web.canGoBack()) web.goBack();
-    else finish();
+    else if (canNavigateHistory()) {
+      clearNativePanel();
+      web.setVisibility(View.VISIBLE);
+      web.goBack();
+    } else finish();
   }
 
   @Override
@@ -597,7 +609,9 @@ public class MainActivity extends Activity {
     if (pendingAudio != null) pendingAudio.deny();
     if (pendingFiles != null) pendingFiles.onReceiveValue(null);
     stopService(new Intent(this, CallService.class));
-    if (startScript != null && WebViewFeature.isFeatureSupported(WebViewFeature.DOCUMENT_START_SCRIPT)) startScript.remove();
+    if (startScript != null
+        && WebViewFeature.isFeatureSupported(WebViewFeature.DOCUMENT_START_SCRIPT))
+      startScript.remove();
     web.stopLoading();
     web.destroy();
     super.onDestroy();

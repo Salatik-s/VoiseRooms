@@ -65,7 +65,9 @@ public class NativeSmokeTest {
                 new android.webkit.WebView.VisualStateCallback() {
                   @Override
                   public void onComplete(long requestId) {
-                    activity.web.postOnAnimation(rendered::countDown);
+                    activity.web.invalidate();
+                    activity.web.postOnAnimation(
+                        () -> activity.web.postOnAnimation(rendered::countDown));
                   }
                 }));
     assertTrue("WebView did not render its updated frame", rendered.await(15, TimeUnit.SECONDS));
@@ -164,13 +166,27 @@ public class NativeSmokeTest {
   @Test
   public void nativeErrorIsRussianAndRetryRecovers() throws Exception {
 
-    try (ActivityScenario<MainActivity> scenario = open("/__native_test_failure?preview=call")) {
+    try (ActivityScenario<MainActivity> scenario = open("/?preview=call")) {
+      waitFor(scenario, "document.body.innerText", "Вечерний разговор");
+      scenario.onActivity(
+          activity ->
+              activity.openTrustedUrl(
+                  TrustedOrigin.TEST_ORIGIN + "/__native_test_failure?preview=call"));
 
       UiDevice device = UiDevice.getInstance(InstrumentationRegistry.getInstrumentation());
       boolean errorShown =
           device.wait(Until.hasObject(By.text("VoiceRooms временно недоступен")), 20000);
       screenshot("android-error-phone");
       assertTrue("The persistent HTTP 503 must show the Russian native error", errorShown);
+      scenario.onActivity(MainActivity::onBackPressed);
+      waitFor(scenario, "document.body.innerText", "Вечерний разговор");
+      scenario.onActivity(
+          activity -> assertEquals(android.view.View.VISIBLE, activity.web.getVisibility()));
+      scenario.onActivity(
+          activity ->
+              activity.openTrustedUrl(
+                  TrustedOrigin.TEST_ORIGIN + "/__native_test_failure?preview=call"));
+      assertTrue(device.wait(Until.hasObject(By.text("VoiceRooms временно недоступен")), 20000));
       java.net.HttpURLConnection recover =
           (java.net.HttpURLConnection)
               new java.net.URL(TrustedOrigin.TEST_ORIGIN + "/__native_test_recover")

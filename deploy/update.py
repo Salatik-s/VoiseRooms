@@ -3,6 +3,7 @@
 import argparse
 import hashlib
 import io
+import http.client
 import json
 import os
 import re
@@ -17,6 +18,7 @@ import zipfile
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 from urllib.request import Request, urlopen
+from urllib.error import HTTPError, URLError
 
 VERSION = "1.2.0"
 DOMAIN = "voise.24projects.ru"
@@ -305,12 +307,58 @@ def wait_json(url, expected, seconds=120):
     raise RuntimeError("Сервис не прошёл проверку готовности: " + url)
 
 
-def verify_downloads(origin, manifest):
+def verify_downloads(origin, manifest, seconds=120):
     for name in sorted(DOWNLOADS):
         target = origin + "/downloads/" + PurePosixPath(name).name
-        with urlopen(Request(target, method="HEAD"), timeout=20) as response:
-            if response.status != 200 or int(response.headers.get("Content-Length", "-1")) != manifest["files"][name]["size"]:
-                raise RuntimeError("Не прошла проверка скачивания пользовательского приложения")
+        expected = manifest["files"][name]
+        deadline = time.monotonic() + seconds
+        last_problem = "сервис ещё запускается"
+        while True:
+            try:
+                request = Request(target, headers={"Accept-Encoding": "identity", "Cache-Control": "no-cache"})
+                with urlopen(request, timeout=min(10, max(0.1, deadline - time.monotonic()))) as response:
+                    if response.status != 200:
+                        raise RuntimeError("Проверка " + target + ": HTTP " + str(response.status))
+                    if "text/html" in response.headers.get("Content-Type", "").lower():
+                        raise RuntimeError("Проверка " + target + ": вместо приложения сервер вернул HTML-страницу")
+                    digest, size = hashlib.sha256(), 0
+                    while True:
+                        chunk = response.read(1024 * 1024)
+                        if not chunk:
+                            break
+                        size += len(chunk)
+                        if size > expected["size"]:
+                            raise RuntimeError("Проверка " + target + ": размер файла больше ожидаемого")
+                        digest.update(chunk)
+                    if size != expected["size"] or digest.hexdigest() != expected["sha256"]:
+                        raise RuntimeError("Проверка " + target + ": размер или SHA-256 файла не совпадает с выпуском")
+                break
+            except HTTPError as error:
+                error.close()
+                if error.code not in {408, 425, 429, 500, 502, 503, 504}:
+                    raise RuntimeError("Проверка " + target + ": HTTP " + str(error.code)) from None
+                last_problem = "HTTP " + str(error.code)
+            except (URLError, TimeoutError, ConnectionError, http.client.HTTPException, OSError) as error:
+                last_problem = type(error).__name__
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise RuntimeError("Не удалось дождаться скачивания " + target + "; последняя ошибка: " + last_problem)
+            time.sleep(min(1, remaining))
+
+
+def failure_reason(error):
+    if isinstance(error, subprocess.CalledProcessError):
+        return "Команда " + str(error.cmd[0]) + " завершилась с кодом " + str(error.returncode)
+    if isinstance(error, HTTPError):
+        return "Сервис вернул HTTP " + str(error.code)
+    if isinstance(error, URLError):
+        return "Ошибка подключения к сервису: " + type(error.reason).__name__
+    return str(error)
+
+
+def deployment_stage(value):
+    print("Этап обновления: " + value, flush=True)
+    return value
 
 
 def switch_current(current, destination):
@@ -387,30 +435,42 @@ def apply_release(archive, expected_sha, layout=None):
         command = compose(release, env_file, images_file)
         changed = False
         migrated = False
+        stage = deployment_stage("проверка конфигурации")
         try:
             run(command + ["config", "--quiet"])
             for service in ["backend", "frontend", "bot"]:
+                stage = deployment_stage("сборка " + service)
                 run(command + ["build", service])
             # The database snapshot stays on the server; credentials never leave it.
+            stage = deployment_stage("резервная копия базы")
             with (backup / "database.dump").open("xb") as output:
                 os.chmod(output.name, 0o600)
                 run(["docker", "exec", state["services"]["postgres"]["id"], "pg_dump", "-U", "voicerooms", "-d", "voicerooms", "--format=custom", "--no-owner", "--no-acl"], stdout=output)
             if (backup / "database.dump").stat().st_size < 64:
                 raise RuntimeError("Резервная копия базы данных не создана")
+            stage = deployment_stage("миграции базы")
             run(command + ["run", "--rm", "--no-deps", "backend", "npx", "prisma", "migrate", "deploy"])
             migrated = True
             changed = True
+            stage = deployment_stage("запуск API и проверка готовности")
             run(command + ["up", "-d", "--no-deps", "--no-build", "--force-recreate", "backend"])
             wait_json("http://127.0.0.1:3099/api/ready", {"status": "ok", "database": True, "media": True})
+            stage = deployment_stage("запуск сайта")
             run(command + ["up", "-d", "--no-deps", "--no-build", "--force-recreate", "frontend"])
+            stage = deployment_stage("готовность сайта и файлы через localhost")
             verify_downloads("http://127.0.0.1:5199", manifest)
+            stage = deployment_stage("готовность API через HTTPS")
             wait_json("https://" + DOMAIN + "/api/ready", {"status": "ok", "database": True, "media": True})
+            stage = deployment_stage("файлы через HTTPS")
             verify_downloads("https://" + DOMAIN, manifest)
+            stage = deployment_stage("публичные комнаты")
             public = wait_json("https://" + DOMAIN + "/api/rooms/public", {})
             if len(public.get("rooms", [])) != 3:
                 raise RuntimeError("Не найдены три публичные комнаты VoiceRooms")
+            stage = deployment_stage("запуск и проверка бота")
             run(command + ["up", "-d", "--no-deps", "--no-build", "--force-recreate", "bot"])
             bot_ready.wait_for_bot(command)
+            stage = deployment_stage("сохранность конфигурации и сервисов")
             if file_sha(env_file) != state["environmentSha256"]:
                 raise RuntimeError("Приватная конфигурация изменилась во время обновления")
             after = installed_state(current, env_file)
@@ -420,14 +480,19 @@ def apply_release(archive, expected_sha, layout=None):
             switch_current(current, release)
             write_json(backup / "success.json", {"release": str(release), "revision": manifest["revision"], "bundleSha256": digest, "databaseMigrated": migrated})
         except Exception as error:
+            reason = "Этап: " + stage + ". Причина: " + failure_reason(error)
+            try:
+                write_json(backup / "failure.json", {"stage": stage, "reason": failure_reason(error), "databaseMigrated": migrated})
+            except OSError:
+                pass
             if changed:
                 try:
                     run(old_command + ["up", "-d", "--no-deps", "--no-build", "--force-recreate", "backend", "frontend", "bot"])
                     switch_current(current, old_root)
                     write_json(backup / "rollback.json", {"containersRestored": True, "databaseMigrated": migrated, "schemaRollback": False})
                 except Exception:
-                    raise RuntimeError("Обновление остановлено. Автоматический возврат контейнеров не завершён. Резервная копия сохранена на хосте: " + str(backup)) from None
-            raise RuntimeError("Обновление остановлено; прежние контейнеры восстановлены, если запуск новых уже начался. Миграции базы автоматически не отменяются. Резервная копия: " + str(backup)) from error
+                    raise RuntimeError(reason + ". Обновление остановлено. Автоматический возврат контейнеров не завершён. Резервная копия сохранена на хосте: " + str(backup)) from None
+            raise RuntimeError(reason + ". Обновление остановлено; прежние контейнеры восстановлены, если запуск новых уже начался. Миграции базы автоматически не отменяются. Резервная копия: " + str(backup)) from error
         print(json.dumps({"status": "updated", "url": "https://" + DOMAIN, "revision": manifest["revision"], "backup": str(backup), "databaseMigrated": True, "otherProjectsChanged": False}))
 
 

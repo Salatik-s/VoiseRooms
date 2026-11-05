@@ -1,0 +1,36 @@
+name: Download readiness
+on:
+  push:
+    branches: ["sukhovskiy.a.a/voicerooms-app-release"]
+    paths:
+      - "deploy/update.py"
+      - "frontend/**"
+      - "tests/download-readiness-smoke.py"
+      - ".github/workflows/download-readiness.yml"
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  real-nginx:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    env:
+      SMOKE_ALPINE: alpine:3.22@sha256:2e0b81d60597f449baa56dc25d355367869d2dca4cd57e866f1e2b52af3eb55f
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - uses: actions/setup-python@v7.1.0
+        with:
+          python-version: "3.12"
+      - name: Pull official fixture backend
+        run: docker pull "$SMOKE_ALPINE"
+      - name: Check actual Nginx startup and verified downloads
+        run: python tests/download-readiness-smoke.py
+      - name: Upload synthetic readiness counters
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: download-readiness
+          path: .qa/download-readiness/summary.json
+          include-hidden-files: true
+          if-no-files-found: warn
+          retention-days: 14

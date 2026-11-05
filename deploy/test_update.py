@@ -1,5 +1,6 @@
 import contextlib
 import hashlib
+import http.server
 import io
 import json
 import os
@@ -8,6 +9,7 @@ import struct
 import subprocess
 import sys
 import tempfile
+import threading
 import types
 import unittest
 import warnings
@@ -301,8 +303,75 @@ class ReleasePackageTests(unittest.TestCase):
                     rollback = json.loads(next(backup.glob("update-*/rollback.json")).read_text())
                     self.assertTrue(rollback["containersRestored"])
                     self.assertFalse(rollback["schemaRollback"])
+                    failure = json.loads(next(backup.glob("update-*/failure.json")).read_text())
+                    self.assertIn("localhost", failure["stage"])
+                    self.assertEqual(failure["reason"], "download check failed")
                     self.assertEqual(switched[-1][1], old_root)
                     self.assertTrue(any(call[-3:] == ["backend", "frontend", "bot"] for call in compose_calls if "up" in call))
+
+
+class DownloadReadinessTests(unittest.TestCase):
+    def setUp(self):
+        fixture = self
+        self.failures = 0
+        self.status = 200
+        self.corrupt = False
+        self.requests = []
+        self.files = {"/downloads/" + Path(name).name: (Path(name).suffix + "-synthetic-file").encode() for name in update.DOWNLOADS}
+        class Handler(http.server.BaseHTTPRequestHandler):
+            def log_message(self, *_args):
+                pass
+            def do_GET(self):
+                fixture.requests.append((self.command, self.path))
+                if fixture.failures:
+                    fixture.failures -= 1
+                    self.send_error(503)
+                    return
+                if fixture.status != 200:
+                    self.send_error(fixture.status)
+                    return
+                body = fixture.files[self.path]
+                if fixture.corrupt:
+                    body = b"x" * len(body)
+                self.send_response(200)
+                self.send_header("Content-Type", "application/octet-stream")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+        self.server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
+        self.thread.start()
+        self.origin = "http://127.0.0.1:" + str(self.server.server_port)
+        self.manifest = {"files": {name: {"size": len(self.files["/downloads/" + Path(name).name]), "sha256": hashlib.sha256(self.files["/downloads/" + Path(name).name]).hexdigest()} for name in update.DOWNLOADS}}
+    def tearDown(self):
+        self.server.shutdown()
+        self.server.server_close()
+        self.thread.join(timeout=2)
+    def test_real_http_startup_503_retries_then_checks_both_payloads(self):
+        self.failures = 2
+        update.verify_downloads(self.origin, self.manifest, seconds=5)
+        self.assertEqual(len(self.requests), 4)
+        self.assertTrue(all(method == "GET" for method, _ in self.requests))
+        self.assertEqual({path for _, path in self.requests}, set(self.files))
+    def test_same_size_wrong_payload_is_rejected_by_sha_without_retry(self):
+        self.corrupt = True
+        with self.assertRaisesRegex(RuntimeError, "SHA-256"):
+            update.verify_downloads(self.origin, self.manifest, seconds=5)
+        self.assertEqual(len(self.requests), 1)
+    def test_permanent_http_404_reports_url_without_retry(self):
+        self.status = 404
+        with self.assertRaisesRegex(RuntimeError, "HTTP 404") as caught:
+            update.verify_downloads(self.origin, self.manifest, seconds=5)
+        self.assertIn(self.origin + "/downloads/", str(caught.exception))
+        self.assertEqual(len(self.requests), 1)
+    def test_connection_failure_deadline_is_bounded_and_error_redacts_command_arguments(self):
+        from urllib.error import URLError
+        with mock.patch.object(update, "urlopen", side_effect=URLError("synthetic connection refused")) as request:
+            with self.assertRaisesRegex(RuntimeError, "URLError"):
+                update.verify_downloads(self.origin, self.manifest, seconds=0)
+            self.assertEqual(request.call_count, 1)
+        message = update.failure_reason(subprocess.CalledProcessError(1, ["docker", "synthetic-private-argument"]))
+        self.assertNotIn("synthetic-private-argument", message)
 
 
 if __name__ == "__main__":

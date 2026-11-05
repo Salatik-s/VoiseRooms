@@ -58,7 +58,7 @@ public class NativeSmokeTest {
   private void screenshot(String name) throws Exception {
     UiDevice device = UiDevice.getInstance(InstrumentationRegistry.getInstrumentation());
     // DOM updates can precede the WebView compositor frame on a cold emulator.
-    device.waitForIdle(500, 10000);
+    InstrumentationRegistry.getInstrumentation().getUiAutomation().waitForIdle(500, 10000);
     SystemClock.sleep(500);
     File dir =
         InstrumentationRegistry.getInstrumentation().getTargetContext().getExternalFilesDir(null);

@@ -56,6 +56,29 @@ class BotTests(unittest.IsolatedAsyncioTestCase):
         await bot.message_handler(message)
         self.assertIn("полная ссылка", message.answer.call_args.args[0])
 
+    async def test_apps_command_links_to_public_installation_instructions(self):
+        message = SimpleNamespace(answer=AsyncMock())
+        await bot.apps_command(message)
+        text = message.answer.call_args.args[0]
+        self.assertIn("компьютер", text)
+        self.assertIn("Apple ID", text)
+        markup = message.answer.call_args.kwargs["reply_markup"]
+        self.assertEqual(markup.inline_keyboard[0][0].url, bot.SITE_URL + "/download")
+
+    async def test_owner_pair_code_is_not_sent_to_other_users(self):
+        message = SimpleNamespace(chat=SimpleNamespace(type="private"),from_user=SimpleNamespace(id=42),answer=AsyncMock())
+        with patch.object(bot, "OWNER", 99), patch.object(bot, "request", AsyncMock()) as request:
+            await bot.admin_command(message)
+        request.assert_not_awaited()
+
+    async def test_owner_code_stays_protected_and_does_not_advertise_private_packages(self):
+        message = SimpleNamespace(chat=SimpleNamespace(type="private"),from_user=SimpleNamespace(id=99),answer=AsyncMock())
+        with patch.object(bot, "OWNER", 99), patch.object(bot, "request", AsyncMock(return_value={"code":"TEST-PAIR"})):
+            await bot.admin_command(message)
+        text = message.answer.call_args.args[0]
+        self.assertNotIn("приложении администратора", text)
+        self.assertTrue(message.answer.call_args.kwargs["protect_content"])
+
     def test_invitation_rejects_injected_or_incomplete_values(self):
         with self.assertRaises(ValueError):
             bot.invitation("x<script>", "k" * 43)

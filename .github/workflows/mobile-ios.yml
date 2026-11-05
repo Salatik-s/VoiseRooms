@@ -1,0 +1,64 @@
+name: iPhone application
+on:
+  push:
+    branches: ["sukhovskiy.a.a/voicerooms-app-release"]
+    paths: ["mobile/ios/**", "mobile/assets/**", "frontend/**", ".github/workflows/mobile-ios.yml"]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  ios:
+    runs-on: macos-15
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - uses: actions/setup-node@v7.1.0
+        with: {node-version: "24"}
+      - name: Prepare Xcode project
+        run: |
+          command -v xcodegen || brew install xcodegen
+          python3 mobile/ios/prepare_icon.py
+          cd mobile/ios
+          xcodegen generate
+      - name: Build iPhone application
+        run: |
+          xcodebuild -project mobile/ios/VoiceRooms.xcodeproj -scheme VoiceRooms -configuration Release -sdk iphoneos -destination 'generic/platform=iOS' -derivedDataPath build/ios CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY='' build > build-ios.log 2>&1 || { tail -100 build-ios.log; exit 1; }
+          mkdir -p package/Payload
+          cp -R build/ios/Build/Products/Release-iphoneos/VoiceRooms.app package/Payload/
+          plutil -lint package/Payload/VoiceRooms.app/Info.plist
+          lipo -info package/Payload/VoiceRooms.app/VoiceRooms
+          cd package
+          zip -qr -X VoiceRooms-1.2.0.ipa Payload
+          shasum -a 256 VoiceRooms-1.2.0.ipa > SHA256SUMS.txt
+      - name: Upload iPhone package
+        uses: actions/upload-artifact@v4
+        with:
+          name: VoiceRooms-iPhone-1.2.0
+          path: |
+            package/VoiceRooms-1.2.0.ipa
+            package/SHA256SUMS.txt
+          retention-days: 30
+      - name: Start local preview
+        run: |
+          npm ci --prefix frontend
+          npm run dev --prefix frontend > preview.log 2>&1 &
+          for i in $(seq 1 30); do curl -fsS http://127.0.0.1:5199/ >/dev/null && break; sleep 1; done
+      - name: Test iPhone layout and controls
+        run: |
+          UDID=$(xcrun simctl list devices available --json | python3 -c 'import json,sys; d=json.load(sys.stdin); print(next(x["udid"] for a in d["devices"].values() for x in a if "iPhone" in x["name"] and x.get("isAvailable")))')
+          xcrun simctl boot "$UDID" || true
+          xcrun simctl bootstatus "$UDID" -b
+          xcodebuild -project mobile/ios/VoiceRooms.xcodeproj -scheme VoiceRooms -configuration Debug -destination "platform=iOS Simulator,id=$UDID" -derivedDataPath build/simulator -resultBundlePath build/VoiceRooms.xcresult test > test-ios.log 2>&1 || { tail -100 test-ios.log; exit 1; }
+          xcrun simctl io "$UDID" screenshot build/iphone-final.png
+      - name: Upload iPhone test evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: VoiceRooms-iPhone-QA
+          path: |
+            build/iphone-final.png
+            build/VoiceRooms.xcresult
+            build-ios.log
+            test-ios.log
+            preview.log
+          retention-days: 14

@@ -66,6 +66,7 @@ def menu():
             ],
             [Button(text="Пригласить в любом чате", switch_inline_query="")],
             [Button(text="О приватности", callback_data="privacy")],
+            [Button(text="Приложения для телефона", url=SITE_URL + "/download")],
         ]
     )
 
@@ -135,7 +136,7 @@ async def new_room(user_id, name=None):
 async def send_room(message, code, key):
     await message.answer(
         "<b>Комната готова</b>\n\nОтправьте приглашение участникам. "
-        "Микрофон включается после входа на сайт.\n"
+        "После входа можно включить микрофон или остаться слушателем.\n"
         "<blockquote>Ссылка содержит ключ шифрования. Не публикуйте её в открытом доступе.</blockquote>",
         reply_markup=room_buttons(code, key, private_chat=True),
         link_preview_options=types.LinkPreviewOptions(is_disabled=True),
@@ -175,6 +176,17 @@ async def help_command(message: types.Message):
     )
 
 
+@dp.message(Command("apps"))
+async def apps_command(message: types.Message):
+    await message.answer(
+        "<b>VoiceRooms на телефоне</b>\n\n"
+        "На сайте доступны APK для Android и IPA для iPhone. "
+        "Для установки IPA нужен компьютер и подпись через ваш Apple ID. "
+        "Инструкция находится рядом с файлом.",
+        reply_markup=Keyboard(inline_keyboard=[[Button(text="Скачать приложение", url=SITE_URL + "/download")]]),
+    )
+
+
 @dp.message(Command("cancel"))
 async def cancel(message: types.Message):
     waiting.discard(message.from_user.id)
@@ -204,7 +216,7 @@ async def admin_command(message: types.Message):
         await message.answer(
             "<b>Вход в панель управления</b>\n\nОдноразовый код: "
             f"<code>{html.escape(data['code'])}</code>\n\n"
-            "Введите его в приложении администратора или на сайте. "
+            "Введите его на экране входа владельца. "
             "Действует 5 минут. Никому не передавайте код.",
             protect_content=True,
             reply_markup=Keyboard(
@@ -354,6 +366,7 @@ async def main():
                 ("start", "Открыть VoiceRooms"),
                 ("help", "Как начать разговор"),
                 ("cancel", "Отменить ввод"),
+                ("apps", "Приложения для телефона"),
             ]
         ]
     )
@@ -362,7 +375,7 @@ async def main():
             await bot.set_my_commands(
                 [
                     types.BotCommand(
-                        command="admin", description="Вход администратора"
+                        command="admin", description="Вход владельца"
                     ),
                     types.BotCommand(command="start", description="Открыть VoiceRooms"),
                 ],

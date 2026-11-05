@@ -2,6 +2,7 @@
 
 import argparse
 import hashlib
+import io
 import json
 import os
 import re
@@ -9,6 +10,7 @@ import shutil
 import stat
 import subprocess
 import sys
+import tarfile
 import time
 import types
 import zipfile
@@ -138,8 +140,8 @@ def extract_bundle(archive, destination, manifest):
             target.chmod(0o644)
 
 
-def run(args, **kwargs):
-    result = subprocess.run(args, check=True, **kwargs)
+def run(args, *, check=True, **kwargs):
+    result = subprocess.run(args, check=check, **kwargs)
     return result
 
 
@@ -175,6 +177,85 @@ def image_override(path, images):
         raise ValueError("Файл образов уже существует")
     path.write_text("services:\n" + "".join(f"  {service}:\n    image: {image}\n" for service, image in images.items()), encoding="utf-8")
     path.chmod(0o600)
+
+
+
+def rollback_target(service, container, tag):
+    if service not in {"backend", "frontend", "bot"} or not re.fullmatch(r"[a-f0-9]{64}", container.get("id", "")) or not re.fullmatch(r"sha256:[a-f0-9]{64}", container.get("image", "")):
+        raise ValueError("Неожиданный контейнер резервного образа")
+    if not re.fullmatch(r"voicerooms-" + service + r":rollback-[a-z0-9-]+", tag):
+        raise ValueError("Неожиданное имя резервного образа")
+
+
+def snapshot_rollback_image(service, container, tag, backup):
+    """Save a parent-independent local image; never export mounted volumes or print config."""
+    rollback_target(service, container, tag)
+    backup = Path(backup)
+    if backup.is_symlink() or not backup.is_dir() or backup.stat().st_mode & 0o077:
+        raise ValueError("Небезопасный каталог резервных образов")
+    identity = container["id"]
+    details = json.loads(capture(["docker", "container", "inspect", identity]))[0]
+    labels = details.get("Config", {}).get("Labels") or {}
+    if details.get("Id") != identity or details.get("Image") != container["image"] or labels.get("com.docker.compose.project") != "voicerooms" or labels.get("com.docker.compose.service") != service or details.get("State", {}).get("Paused"):
+        raise RuntimeError("Контейнер изменился до создания резервного образа; обновление не начато")
+    descriptor_platform = (details.get("ImageManifestDescriptor") or {}).get("platform") or {}
+    host_platform = capture(["docker", "info", "--format", "{{.OSType}}/{{.Architecture}}"])
+    operating_system, _, host_arch = host_platform.partition("/")
+    architecture = descriptor_platform.get("architecture") or {"x86_64": "amd64", "amd64": "amd64", "aarch64": "arm64", "arm64": "arm64"}.get(host_arch)
+    if operating_system != "linux" or descriptor_platform.get("os", "linux") != "linux" or architecture not in {"amd64", "arm64"}:
+        raise RuntimeError("Платформа резервного образа не поддерживается; обновление не начато")
+    keys = {"Env", "Entrypoint", "Cmd", "User", "WorkingDir", "Labels", "ExposedPorts", "Volumes", "Healthcheck", "StopSignal", "ArgsEscaped", "Shell", "OnBuild"}
+    configuration = {key: value for key, value in details["Config"].items() if key in keys and value is not None}
+    layer = backup / ("." + service + "-rootfs.tar")
+    archive = backup / (service + "-rollback-image.tar")
+    paused = False
+    try:
+        with layer.open("xb") as output:
+            os.chmod(output.name, 0o600)
+            try:
+                if details.get("State", {}).get("Running"):
+                    run(["docker", "container", "pause", identity], capture_output=True)
+                    paused = True
+                run(["docker", "container", "export", identity], stdout=output)
+            finally:
+                if paused:
+                    try:
+                        run(["docker", "container", "unpause", identity], capture_output=True)
+                    except subprocess.CalledProcessError:
+                        raise RuntimeError("Не удалось возобновить контейнер " + service + ". Выполните docker unpause " + identity) from None
+        created = datetime.now(timezone.utc).isoformat()
+        config_bytes = json.dumps({"architecture": architecture, "os": "linux", "created": created, "config": configuration, "rootfs": {"type": "layers", "diff_ids": ["sha256:" + file_sha(layer)]}, "history": [{"created": created, "created_by": "VoiceRooms local rollback snapshot"}]}, sort_keys=True).encode()
+        config_name = hashlib.sha256(config_bytes).hexdigest() + ".json"
+        manifest_bytes = json.dumps([{"Config": config_name, "RepoTags": [tag], "Layers": ["layer.tar"]}]).encode()
+        with archive.open("xb") as output:
+            os.chmod(output.name, 0o600)
+            with tarfile.open(fileobj=output, mode="w") as saved:
+                for name, body in [(config_name, config_bytes), ("manifest.json", manifest_bytes)]:
+                    entry = tarfile.TarInfo(name); entry.size = len(body); entry.mode = 0o600
+                    saved.addfile(entry, io.BytesIO(body))
+                entry = tarfile.TarInfo("layer.tar"); entry.size = layer.stat().st_size; entry.mode = 0o600
+                with layer.open("rb") as rootfs:
+                    saved.addfile(entry, rootfs)
+        run(["docker", "image", "load", "--input", str(archive)], capture_output=True)
+        restored = json.loads(capture(["docker", "image", "inspect", tag]))[0]
+        if any((restored.get("Config", {}).get(key) or None) != (value or None) for key, value in configuration.items()):
+            raise RuntimeError("Резервный образ не сохранил настройки контейнера; обновление не начато")
+        write_json(backup / (service + "-snapshot.json"), {"method": "export/load", "container": identity, "originalImage": container["image"], "rollbackImage": tag, "archiveSha256": file_sha(archive), "size": archive.stat().st_size})
+    finally:
+        if layer.exists():
+            layer.unlink()
+    return "snapshot"
+
+
+def preserve_rollback_image(service, container, tag, backup):
+    rollback_target(service, container, tag)
+    attempt = run(["docker", "image", "tag", container["image"], tag], check=False, capture_output=True, text=True)
+    if attempt.returncode == 0:
+        return "tagged"
+    if "no such image" not in (attempt.stderr or "").lower():
+        raise RuntimeError("Не удалось сохранить исходный образ " + service + "; обновление не начато")
+    print("Исходный образ " + service + " недоступен. Сохраняем резервный образ из текущего контейнера…", flush=True)
+    return snapshot_rollback_image(service, container, tag, backup)
 
 
 def installed_state(current, env_file):
@@ -293,12 +374,12 @@ def apply_release(archive, expected_sha, layout=None):
             shutil.copy2(old_proxy, release / "proxy.compose.yaml")
         prepare.render(env_file, release / "livekit.yaml")
         os.chown(release / "livekit.yaml", 10001, 10001)
-        # Preserve exact old image IDs under dedicated tags before building new images.
+        # Preserve old images before building; a removed parent needs a standalone snapshot.
         old_images, new_images = {}, {}
         for service in ["backend", "frontend", "bot"]:
             old_images[service] = f"voicerooms-{service}:rollback-{stamp.lower()}"
             new_images[service] = f"voicerooms-{service}:release-{stamp.lower()}"
-            run(["docker", "image", "tag", state["services"][service]["image"], old_images[service]])
+            preserve_rollback_image(service, state["services"][service], old_images[service], backup)
         rollback_file, images_file = backup / "rollback-images.compose.yaml", release / "release-images.compose.yaml"
         image_override(rollback_file, old_images)
         image_override(images_file, new_images)

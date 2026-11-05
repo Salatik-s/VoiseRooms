@@ -222,6 +222,26 @@ class ReleasePackageTests(unittest.TestCase):
                 update.first_install(self.archive,digest,unrelated,"voice@example.com",False,{"base":str(host),"env":str(existing),"upload_root":str(self.base)})
         self.assertEqual(unrelated.read_text(),"preserve me")
 
+    def test_rollback_image_tag_and_missing_image_recovery_are_distinct(self):
+        container = {"id": "b" * 64, "image": "sha256:" + "a" * 64, "running": True}
+        tag = "voicerooms-backend:rollback-test"
+        for status, message, expected in [(0, "", "tagged"), (1, "Error response from daemon: No such image: sha256:" + "a" * 64, "snapshot")]:
+            with self.subTest(status=status), mock.patch.object(update, "run", return_value=types.SimpleNamespace(returncode=status, stderr=message)), mock.patch.object(update, "snapshot_rollback_image", return_value="snapshot") as snapshot, contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(update.preserve_rollback_image("backend", container, tag, self.base), expected)
+                self.assertEqual(snapshot.call_count, status)
+        with mock.patch.object(update, "run", return_value=types.SimpleNamespace(returncode=1, stderr="Cannot connect to the Docker daemon")), mock.patch.object(update, "snapshot_rollback_image") as snapshot:
+            with self.assertRaisesRegex(RuntimeError, "обновление не начато"):
+                update.preserve_rollback_image("backend", container, tag, self.base)
+            snapshot.assert_not_called()
+
+    def test_rollback_refuses_database_media_and_foreign_tags(self):
+        container = {"id": "b" * 64, "image": "sha256:" + "a" * 64}
+        for service, tag in [("postgres", "voicerooms-postgres:rollback-test"), ("livekit", "voicerooms-livekit:rollback-test"), ("backend", "another-project:rollback-test")]:
+            with self.subTest(service=service), mock.patch.object(update, "run") as command:
+                with self.assertRaises(ValueError):
+                    update.preserve_rollback_image(service, container, tag, self.base)
+                command.assert_not_called()
+
     def test_scoped_commands_and_rollback_keep_database_snapshot(self):
         manifest, digest = self.bundle()
         for fail_after_migration in [False, True]:
@@ -233,7 +253,7 @@ class ReleasePackageTests(unittest.TestCase):
                 (old_root / "compose.yaml").write_text("services: {}")
                 env = host / "production.env"
                 env.write_text("DOMAIN=voise.24projects.ru\nPUBLIC_IPV4=157.228.191.231\n")
-                before = {"previous": str(old_root), "environmentSha256": update.file_sha(env), "services": {name: {"id": name + "-container", "image": "sha256:" + "a" * 64, "running": True, "mounts": []} for name in ["postgres", "livekit", "backend", "frontend", "bot"]}}
+                before = {"previous": str(old_root), "environmentSha256": update.file_sha(env), "services": {name: {"id": hashlib.sha256(name.encode()).hexdigest(), "image": "sha256:" + "a" * 64, "running": True, "mounts": []} for name in ["postgres", "livekit", "backend", "frontend", "bot"]}}
                 calls, switched = [], []
                 def fake_run(args, **kwargs):
                     calls.append(args)

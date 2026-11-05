@@ -1,0 +1,53 @@
+name: Rollback image recovery
+on:
+  push:
+    branches: ["sukhovskiy.a.a/voicerooms-app-release"]
+    paths:
+      - "deploy/update.py"
+      - "tests/rollback-smoke.py"
+      - ".github/workflows/rollback-images.yml"
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  real-docker-snapshot:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        image-store: [classic, containerd]
+    env:
+      SMOKE_ALPINE: alpine:3.22@sha256:2e0b81d60597f449baa56dc25d355367869d2dca4cd57e866f1e2b52af3eb55f
+      SMOKE_IMAGE_STORE: ${{ matrix.image-store }}
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - uses: actions/setup-python@v7.1.0
+        with:
+          python-version: "3.12"
+      - name: Select image store on the ephemeral runner
+        shell: bash
+        run: |
+          sudo env SNAPSHOTTER="$SMOKE_IMAGE_STORE" python3 - <<'PY'
+          import json, os
+          from pathlib import Path
+          config = Path("/etc/docker/daemon.json")
+          data = json.loads(config.read_text()) if config.exists() else {}
+          data.setdefault("features", {})["containerd-snapshotter"] = os.environ["SNAPSHOTTER"] == "containerd"
+          config.write_text(json.dumps(data))
+          PY
+          sudo systemctl restart docker
+          docker info --format '{{.Driver}}'
+      - name: Pull digest-pinned official Alpine
+        run: docker pull "$SMOKE_ALPINE"
+      - name: Exercise the real updater snapshot helpers
+        run: python tests/rollback-smoke.py
+      - name: Upload non-sensitive test counters
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: rollback-image-${{ matrix.image-store }}
+          path: .qa/rollback-smoke/summary.json
+          include-hidden-files: true
+          if-no-files-found: warn
+          retention-days: 14

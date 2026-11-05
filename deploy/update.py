@@ -181,7 +181,7 @@ def installed_state(current, env_file):
     current, env_file = Path(current), Path(env_file)
     releases = Path("/opt/voicerooms/releases")
     if not current.is_symlink():
-        raise RuntimeError("Установленный выпуск VoiceRooms не найден. Для первой установки используйте deploy/send-to-host.ps1 -SkipPortfolio.")
+        raise RuntimeError("Установленный выпуск VoiceRooms не найден. Для первой установки используйте deploy/update.ps1 -FirstInstall -AgreeLetsEncryptTerms.")
     previous = current.resolve(strict=True)
     if not previous.is_dir() or not previous.is_relative_to(releases.resolve()) or previous.parent != releases:
         raise RuntimeError("Текущий выпуск находится вне управляемого каталога")

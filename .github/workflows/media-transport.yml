@@ -1,0 +1,49 @@
+name: Native media transport
+on:
+  push:
+    branches: ["sukhovskiy.a.a/voicerooms-app-release"]
+    paths:
+      - "tests/media-smoke/**"
+      - ".github/workflows/media-transport.yml"
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  synthetic-media:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - uses: actions/setup-node@v7.1.0
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: tests/media-smoke/package-lock.json
+      - name: Install pinned official SDKs
+        working-directory: tests/media-smoke
+        run: npm ci --ignore-scripts --registry=https://registry.npmjs.org
+      - name: Download and verify official LiveKit release
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/livekit-smoke"
+          cd "$RUNNER_TEMP/livekit-smoke"
+          curl --fail --location --retry 3 --proto '=https' --tlsv1.2 \
+            -o livekit.tar.gz \
+            https://github.com/livekit/livekit/releases/download/v1.13.11/livekit_1.13.11_linux_amd64.tar.gz
+          echo '1e9ee90ca301e1842b2887fc77cb122759756a9c8aeb4334ee91de3325ec43fb  livekit.tar.gz' | sha256sum --check --strict
+          tar -xzf livekit.tar.gz livekit-server
+          chmod +x livekit-server
+          echo "LIVEKIT_BINARY=$RUNNER_TEMP/livekit-smoke/livekit-server" >> "$GITHUB_ENV"
+      - name: Test two-client PCM and reliable data, plain and E2EE
+        working-directory: tests/media-smoke
+        run: npm test
+      - name: Upload synthetic transport evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: native-media-transport
+          path: tests/media-smoke/evidence/*.json
+          if-no-files-found: warn
+          retention-days: 14
+

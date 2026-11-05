@@ -1,0 +1,2 @@
+<resources><style name="Theme.VoiceRooms" parent="android:style/Theme.Material.NoActionBar"><item name="android:fontFamily">sans</item><item name="android:windowLightStatusBar">false</item><item name="android:windowBackground">#17191c</item><item name="android:statusBarColor">#17191c</item><item name="android:navigationBarColor">#17191c</item><item name="android:colorAccent">#67b6f5</item><item name="android:windowActionModeOverlay">true</item></style></resources>
+

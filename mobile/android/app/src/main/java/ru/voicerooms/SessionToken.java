@@ -1,0 +1,1 @@
+package ru.voicerooms;public final class SessionToken {  public static boolean isValid(String token) {    return token != null        && token.length() < 4096        && token.matches("[A-Za-z0-9_-]+\\.[A-Za-z0-9_-]+");  }  private SessionToken() {}}

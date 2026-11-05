@@ -13,13 +13,15 @@ jobs:
         with: { python-version: "3.12" }
       - run: npm ci
         working-directory: backend
-      - run: node --test test/security.test.js
+      - run: npx prisma generate
+        working-directory: backend
+      - run: node --test test/security.test.js test/moderation.test.js
         working-directory: backend
       - run: npm ci
         working-directory: frontend
       - run: npm run build
         working-directory: frontend
-      - run: node --test test/admission.mjs
+      - run: node --test test/*.mjs
         working-directory: frontend
       - run: pip install -r bot/requirements.txt
       - run: python -m unittest discover -s bot -p 'test_*.py'

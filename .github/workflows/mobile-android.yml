@@ -1,0 +1,58 @@
+name: Android app verification
+on:
+  push:
+    paths:
+      - 'mobile/android/**'
+      - 'frontend/**'
+      - '.github/workflows/mobile-android.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  android:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: gradle
+      - uses: android-actions/setup-android@v3
+      - name: Install Android build tools
+        run: sdkmanager 'platforms;android-35' 'build-tools;34.0.0' 'platform-tools'
+      - name: Build and unit-test
+        run: bash mobile/android/gradlew -p mobile/android testReleaseUnitTest assembleDebug assembleDebugAndroidTest --no-daemon
+      - name: Start local visual fixture
+        run: |
+          npm ci --prefix frontend
+          npm run dev --prefix frontend -- --host 127.0.0.1 --port 5199 > /tmp/voice-preview.log 2>&1 &
+          node mobile/android/smoke-server.mjs > /tmp/voice-smoke.log 2>&1 &
+      - name: Wait for visual fixture
+        run: node mobile/android/wait-preview.mjs
+      - name: Run phone emulator checks
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 35
+          target: google_apis
+          arch: x86_64
+          profile: pixel_7
+          emulator-boot-timeout: 900
+          emulator-options: -no-window -gpu swiftshader_indirect -no-snapshot -noaudio -no-boot-anim -camera-back none
+          disable-animations: true
+          disable-linux-hw-accel: auto
+          script: bash mobile/android/gradlew -p mobile/android connectedDebugAndroidTest --no-daemon
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: android-verification
+          path: |
+            mobile/android/app/build/reports/tests/
+            mobile/android/app/build/reports/androidTests/
+            mobile/android/app/build/outputs/androidTest-results/

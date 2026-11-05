@@ -39,6 +39,12 @@ jobs:
           node mobile/android/smoke-server.mjs > /tmp/voice-smoke.log 2>&1 &
       - name: Wait for visual fixture
         run: node mobile/android/wait-preview.mjs
+      # Recommended by android-emulator-runner for this disposable GitHub runner.
+      - name: Enable KVM for emulator
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
       - name: Run phone emulator checks
         uses: reactivecircus/android-emulator-runner@v2
         with:

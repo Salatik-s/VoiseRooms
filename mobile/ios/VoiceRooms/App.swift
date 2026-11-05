@@ -76,11 +76,7 @@ final class VoiceViewController: UIViewController, WKNavigationDelegate, WKUIDel
         configuration.websiteDataStore = .default()
         let relay=ScriptRelay();relay.target=self
         configuration.userContentController.add(relay,name:"VoiceRoomsNativeHost")
-        let encoded=(try? JSONSerialization.data(withJSONObject:[vault.read()])).flatMap { String(data:$0,encoding:.utf8) } ?? "[\"\"]"
-        let bridge="""
-        (()=>{if(location.origin==='https://voise.24projects.ru'){const saved=\(encoded)[0];if(saved&&!sessionStorage.getItem('vr-session'))sessionStorage.setItem('vr-session',saved);window.VoiceRoomsNative=Object.freeze({saveSession:token=>webkit.messageHandlers.VoiceRoomsNativeHost.postMessage({kind:'session',token}),callState:(active,microphone)=>webkit.messageHandlers.VoiceRoomsNativeHost.postMessage({kind:'call',active:!!active,microphone:!!microphone}),saveFile:(name,base64,mime)=>webkit.messageHandlers.VoiceRoomsNativeHost.postMessage({kind:'file',name,base64,mime})});}})();
-        """
-        configuration.userContentController.addUserScript(WKUserScript(source:bridge,injectionTime:.atDocumentStart,forMainFrameOnly:true))
+        installBridge(configuration.userContentController)
         web = WKWebView(frame: .zero, configuration: configuration)
         web.isOpaque = false
         web.backgroundColor = view.backgroundColor
@@ -104,11 +100,22 @@ final class VoiceViewController: UIViewController, WKNavigationDelegate, WKUIDel
         NSLayoutConstraint.activate([progress.centerXAnchor.constraint(equalTo: view.centerXAnchor), progress.centerYAnchor.constraint(equalTo: view.centerYAnchor)])
         load(pendingInvitation ?? initialURL())
     }
+    private func installBridge(_ controller:WKUserContentController) {
+        let encoded=(try? JSONSerialization.data(withJSONObject:[vault.read()])).flatMap { String(data:$0,encoding:.utf8) } ?? "[\"\"]"
+        let bridge="""
+        (()=>{if(location.origin==='https://voise.24projects.ru'){const saved=\(encoded)[0];if(saved&&!sessionStorage.getItem('vr-session'))sessionStorage.setItem('vr-session',saved);window.VoiceRoomsNative=Object.freeze({saveSession:token=>webkit.messageHandlers.VoiceRoomsNativeHost.postMessage({kind:'session',token}),callState:(active,microphone)=>webkit.messageHandlers.VoiceRoomsNativeHost.postMessage({kind:'call',active:!!active,microphone:!!microphone}),saveFile:(name,base64,mime)=>webkit.messageHandlers.VoiceRoomsNativeHost.postMessage({kind:'file',name,base64,mime})});}})();
+        """
+        controller.removeAllUserScripts()
+        controller.addUserScript(WKUserScript(source:bridge,injectionTime:.atDocumentStart,forMainFrameOnly:true))
+    }
     fileprivate func receive(_ message:WKScriptMessage) {
         guard message.frameInfo.isMainFrame,message.frameInfo.securityOrigin.protocol=="https",message.frameInfo.securityOrigin.host==origin.host,
               message.frameInfo.securityOrigin.port==443 || message.frameInfo.securityOrigin.port==0,
               let current=web.url,trusted(current),let body=message.body as? [String:Any],let kind=body["kind"] as? String else { return }
-        if kind=="session",let token=body["token"] as? String {vault.save(token)}
+        if kind=="session",let token=body["token"] as? String,SessionVault.valid(token) {
+            vault.save(token)
+            installBridge(web.configuration.userContentController)
+        }
         if kind=="call",let active=body["active"] as? Bool,let microphone=body["microphone"] as? Bool {
             let audio=AVAudioSession.sharedInstance()
             if active {

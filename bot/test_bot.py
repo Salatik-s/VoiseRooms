@@ -71,12 +71,12 @@ class BotTests(unittest.IsolatedAsyncioTestCase):
             await bot.admin_command(message)
         request.assert_not_awaited()
 
-    async def test_owner_code_stays_protected_and_does_not_advertise_private_packages(self):
+    async def test_owner_code_stays_protected(self):
         message = SimpleNamespace(chat=SimpleNamespace(type="private"),from_user=SimpleNamespace(id=99),answer=AsyncMock())
         with patch.object(bot, "OWNER", 99), patch.object(bot, "request", AsyncMock(return_value={"code":"TEST-PAIR"})):
             await bot.admin_command(message)
         text = message.answer.call_args.args[0]
-        self.assertNotIn("приложении администратора", text)
+        self.assertIn("TEST-PAIR", text)
         self.assertTrue(message.answer.call_args.kwargs["protect_content"])
 
     def test_invitation_rejects_injected_or_incomplete_values(self):

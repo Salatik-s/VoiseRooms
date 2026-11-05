@@ -20,7 +20,7 @@ assert.equal(process.env.GITHUB_ACTIONS,'true','Use only the isolated CI runner'
 assert.equal(process.platform,'linux');assert.ok(output);
 const service=new RoomServiceClient('http://127.0.0.1:7898',process.env.SMOKE_KEY,process.env.SMOKE_SECRET);
 const roomName='synthetic-'+mode+'-'+randomBytes(8).toString('hex');
-const rooms=[new Room(),new Room()],readers=[],sources=[],tracks=[];
+const rooms=[new Room(),new Room()],readers=[],sources=[],tracks=[],identities=[];
 const stats=[0,1].map(()=>({frames:0,samples:0,sumSquares:0,toneFrames:0,data:0}));
 const result={mode,sdk:'@livekit/rtc-node@1.2.1',syntheticOnly:true,connected:0,
   encryptedPublications:[],cryptors:[],wrongKeyControl:null,pass:false};
@@ -61,7 +61,8 @@ const publish=async index=>{
   assert.equal(pub.encryptionType,encrypted?EncryptionType.GCM:EncryptionType.NONE);
 };
 const connectClient=async(i,receiverKey)=>{
-    const token=new AccessToken(process.env.SMOKE_KEY,process.env.SMOKE_SECRET,{identity:'synthetic-'+i,ttl:120});
+    identities[i]='synthetic-'+i+'-'+randomBytes(6).toString('hex');
+    const token=new AccessToken(process.env.SMOKE_KEY,process.env.SMOKE_SECRET,{identity:identities[i],ttl:120});
     token.addGrant({roomJoin:true,room:roomName,canPublish:true,canSubscribe:true,canPublishData:true});
     await deadline(rooms[i].connect('ws://127.0.0.1:7898',await token.toJwt(),{autoSubscribe:true,dynacast:false,
       // Explicit local STUN avoids the SDK's external STUN fallback.
@@ -71,6 +72,12 @@ const connectClient=async(i,receiverKey)=>{
       ...(encrypted?{encryption:{keyProviderOptions:{sharedKey:receiverKey},
         encryptionType:EncryptionType.GCM}}:{})}),'connect');
 };
+const wireRoom=index=>{
+    rooms[index].on(RoomEvent.TrackSubscribed,(remote,pub)=>receive(index,remote,pub));
+    rooms[index].on(RoomEvent.DataReceived,(payload,_,__,topic)=>{
+      if(topic==='synthetic-only'&&new TextDecoder().decode(payload)===marker+'-'+(1-index))stats[index].data++;
+    });
+};
 const started=Date.now();
 const watchdog=setTimeout(()=>{
   writeFileSync(output,JSON.stringify({...result,error:'Global native media timeout',elapsedMs:Date.now()-started},null,2));
@@ -79,10 +86,7 @@ const watchdog=setTimeout(()=>{
 try{
   await service.createRoom({name:roomName,maxParticipants:2,emptyTimeout:60});
   for(let i=0;i<2;i++){
-    rooms[i].on(RoomEvent.TrackSubscribed,(remote,pub)=>receive(i,remote,pub));
-    rooms[i].on(RoomEvent.DataReceived,(payload,_,__,topic)=>{
-      if(topic==='synthetic-only'&&new TextDecoder().decode(payload)===marker+'-'+(1-i))stats[i].data++;
-    });
+    wireRoom(i);
     await connectClient(i,encrypted&&i===1?wrongKey:sharedKey);
     result.connected++;
   }
@@ -96,7 +100,17 @@ try{
     assert.equal(wrongKeyLoudFrames,0,'Wrong E2EE key decoded audible synthetic frames');
     // Reconnect through the public SDK API with the correct key. No private SDK fields.
     for(const entry of readers.filter(entry=>entry.index===1))await entry.reader.cancel();
+    const oldIdentity=identities[1];
     await deadline(rooms[1].disconnect(),'wrong-key disconnect');
+    // Isolate the correct-key phase from the previous native client session;
+    // await server-side departure before creating a fresh Room and identity.
+    let departed=false;
+    for(let attempt=0;attempt<50;attempt++){
+      departed=!(await service.listParticipants(roomName)).some(p=>p.identity===oldIdentity);
+      if(departed)break;await sleep(100);
+    }
+    assert.ok(departed,'Wrong-key participant did not leave the temporary room');
+    rooms[1]=new Room();wireRoom(1);
     await connectClient(1,sharedKey);
     result.reconnectedWithCorrectKey=true;
     await sleep(700);

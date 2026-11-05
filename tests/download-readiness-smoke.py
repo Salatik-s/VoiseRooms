@@ -104,7 +104,9 @@ def main():
         docker("build", "--progress=plain", "-t", image, "-f", str(ROOT / "frontend/Dockerfile"), str(ROOT / "frontend"))
         docker("network", "create", network)
         docker("run", "-d", "--name", backend, "--network", network, "--network-alias", "backend",
-               ALPINE, "busybox", "httpd", "-f", "-p", "3000", "-h", "/tmp")
+               ALPINE, "sleep", "600")
+        # Static downloads need only a live DNS alias for Nginx upstream parsing.
+        assert inspect(backend)["State"]["Running"], "Synthetic backend DNS fixture exited"
 
         def verify(origin):
             counter = {"getAttempts": 0, "transientFailures": 0}

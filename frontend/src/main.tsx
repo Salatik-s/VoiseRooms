@@ -1,6 +1,28 @@
 import React from "react";
 import ReactDOM from "react-dom/client";
 
+class AppErrorBoundary extends React.Component<
+  { children: React.ReactNode },
+  { failed: boolean }
+> {
+  state = { failed: false };
+  static getDerivedStateFromError() {
+    return { failed: true };
+  }
+  render() {
+    return this.state.failed ? (
+      <main className="preview-closed">
+        <h1>Не удалось открыть страницу</h1>
+        <p>Обновите страницу. Если ошибка повторяется, попробуйте позже.</p>
+        <button className="btn btn-primary" onClick={() => location.reload()}>
+          Обновить страницу
+        </button>
+      </main>
+    ) : (
+      this.props.children
+    );
+  }
+}
 async function bootstrap() {
   const hash = new URLSearchParams(location.hash.slice(1));
   const room = new URLSearchParams(location.search).get("room"),
@@ -38,7 +60,9 @@ async function bootstrap() {
   const { default: App } = await import("./App");
   ReactDOM.createRoot(document.getElementById("root")!).render(
     <React.StrictMode>
-      <App />
+      <AppErrorBoundary>
+        <App />
+      </AppErrorBoundary>
     </React.StrictMode>,
   );
 }

@@ -74,15 +74,36 @@ export async function buildApp({
     return payload;
   });
   const fail = (code, message) =>
-    Object.assign(new Error(message), { statusCode: code });
+    Object.assign(new Error(message), {
+      statusCode: code,
+      publicMessage: message,
+    });
+  const errorText = {
+    400: "Не удалось выполнить действие. Обновите страницу и попробуйте ещё раз.",
+    401: "Сессия истекла. Откройте комнату заново.",
+    403: "У вас нет доступа к этому действию.",
+    404: "Комната не найдена. Проверьте приглашение.",
+    409: "Действие сейчас недоступно. Попробуйте ещё раз.",
+    410: "Комната закрыта или срок приглашения истёк.",
+    413: "Файл или сообщение слишком большие. Уменьшите размер и попробуйте снова.",
+    415: "Не удалось прочитать запрос. Обновите страницу и попробуйте ещё раз.",
+    429: "Слишком много попыток. Подождите минуту и попробуйте снова.",
+  };
+  app.setNotFoundHandler((_req, reply) =>
+    reply.code(404).send({ error: errorText[404] }),
+  );
   app.setErrorHandler((e, req, reply) => {
     const code = e.statusCode || 500;
-    reply.code(code).send({
-      error:
-        code >= 500
-          ? "Сервис временно недоступен. Попробуйте ещё раз."
-          : e.message,
-    });
+    reply
+      .code(code)
+      .send({
+        error:
+          code >= 500
+            ? "Сервис временно недоступен. Попробуйте позже."
+            : e.publicMessage ||
+              errorText[code] ||
+              "Не удалось выполнить действие. Попробуйте ещё раз.",
+      });
     if (code >= 500)
       app.log.error(
         { type: e.name, code: e.code || "UNKNOWN" },
@@ -127,6 +148,7 @@ export async function buildApp({
     name: r.name,
     isPersistent: r.isPersistent,
     isActive: isActive(r),
+    isLocked: r.isLocked,
     encrypted: r.encrypted,
     maxParticipants: r.maxParticipants,
     expiresAt: r.expiresAt,
@@ -144,6 +166,53 @@ export async function buildApp({
     if (u.id !== owner && r.ownerTgId !== BigInt(u.id))
       throw fail(403, "Управлять комнатой может только её создатель");
     return { u, r };
+  }
+  const publishSources = (blocked) => [
+    ...(!blocked ? [TrackSource.MICROPHONE] : []),
+    TrackSource.SCREEN_SHARE,
+    TrackSource.SCREEN_SHARE_AUDIO,
+  ];
+  const managerIdentity = (r, identity) =>
+    (r.ownerTgId !== null &&
+      identity === idFor(r.code, { id: Number(r.ownerTgId) })) ||
+    (owner > 0 && identity === idFor(r.code, { id: owner }));
+  async function targetMember(r, u, target) {
+    if (
+      !/^[a-f0-9]{24}$/.test(target) ||
+      target === idFor(r.code, u) ||
+      managerIdentity(r, target)
+    )
+      throw fail(400, "Выберите участника без прав управления комнатой");
+    const member = await prisma.roomParticipantName.findUnique({
+      where: { roomId_identity: { roomId: r.id, identity: target } },
+    });
+    if (!member) throw fail(404, "Участник не найден в этой комнате");
+    return member;
+  }
+  async function removeParticipant(code, identity) {
+    await lk.removeParticipant(code, identity).catch((e) => {
+      if (e.status !== 404 && e.code !== "not_found") throw e;
+    });
+  }
+  async function enforceMicrophone(r, identity, blocked) {
+    const p = await lk.getParticipant(r.code, identity).catch((e) => {
+      if (e.status === 404 || e.code === "not_found") return null;
+      throw e;
+    });
+    if (!p) return;
+    await lk.updateParticipant(r.code, identity, {
+      permission: {
+        ...p.permission,
+        canPublish: true,
+        canPublishSources: publishSources(blocked),
+        canPublishData: true,
+      },
+    });
+    // Restoring permission never turns another person's microphone on.
+    if (blocked)
+      for (const track of p.tracks || [])
+        if (track.source === TrackSource.MICROPHONE)
+          await lk.mutePublishedTrack(r.code, identity, track.sid, true);
   }
   async function globalAdmin(req) {
     const u = await user(req);
@@ -203,18 +272,27 @@ export async function buildApp({
       const r = await prisma.room.findUnique({
         where: { code: event.room.name },
       });
+      const identity = event.participant.identity;
+      const record =
+        r &&
+        (await prisma.roomParticipantName.findUnique({
+          where: { roomId_identity: { roomId: r.id, identity } },
+        }));
       if (
         !isActive(r) ||
+        !record ||
         (await prisma.roomBan.findUnique({
-          where: {
-            roomId_identity: {
-              roomId: r.id,
-              identity: event.participant.identity,
-            },
-          },
-        }))
-      )
-        await lk.removeParticipant(event.room.name, event.participant.identity);
+          where: { roomId_identity: { roomId: r.id, identity } },
+        })) ||
+        (r.isLocked &&
+          !record.allowedWhileLocked &&
+          !managerIdentity(r, identity))
+      ) {
+        await removeParticipant(event.room.name, identity);
+      } else {
+        // Re-check persisted restrictions even for a media JWT minted before moderation.
+        await enforceMicrophone(r, identity, record.microphoneBlocked);
+      }
     }
     return reply.code(200).send({ ok: true });
   });
@@ -326,10 +404,16 @@ export async function buildApp({
         where: { roomId_identity: { roomId: r.id, identity } },
       })
     )
-      throw fail(403, "Вы удалены из этой комнаты");
+      throw fail(403, "Вход в эту комнату заблокирован");
     const existing = await prisma.roomParticipantName.findUnique({
       where: { roomId_identity: { roomId: r.id, identity } },
     });
+    if (
+      r.isLocked &&
+      !existing?.allowedWhileLocked &&
+      !managerIdentity(r, identity)
+    )
+      throw fail(403, "Вход в комнату закрыт создателем");
     const name =
         existing?.displayName ||
         (u.id === owner
@@ -361,11 +445,7 @@ export async function buildApp({
       canPublish: true,
       canSubscribe: true,
       canPublishData: true,
-      canPublishSources: [
-        TrackSource.MICROPHONE,
-        TrackSource.SCREEN_SHARE,
-        TrackSource.SCREEN_SHARE_AUDIO,
-      ],
+      canPublishSources: publishSources(existing?.microphoneBlocked),
     });
     const token = await at.toJwt();
     await prisma.roomParticipantName.upsert({
@@ -380,6 +460,7 @@ export async function buildApp({
       identity,
       isAdmin,
       isOwner: isAdmin,
+      microphoneBlocked: existing?.microphoneBlocked || false,
       encrypted: r.encrypted,
       maxParticipants: r.maxParticipants,
     };
@@ -400,43 +481,95 @@ export async function buildApp({
   app.post("/api/room/:code/kick", async (req) => {
     const { u, r } = await admin(req, req.params.code),
       target = String(req.body?.targetIdentity || "");
-    if (!/^[a-f0-9]{24}$/.test(target) || target === idFor(r.code, u))
-      throw fail(400, "Выберите другого участника");
+    await targetMember(r, u, target);
+    await prisma.roomParticipantName.update({
+      where: { roomId_identity: { roomId: r.id, identity: target } },
+      data: { allowedWhileLocked: false },
+    });
+    await removeParticipant(r.code, target);
+    return { success: true };
+  });
+  app.post("/api/room/:code/ban", async (req) => {
+    const { u, r } = await admin(req, req.params.code),
+      target = String(req.body?.targetIdentity || "");
+    await targetMember(r, u, target);
     await prisma.roomBan.upsert({
       where: { roomId_identity: { roomId: r.id, identity: target } },
       create: { roomId: r.id, identity: target },
       update: {},
     });
-    await lk.removeParticipant(r.code, target);
+    await removeParticipant(r.code, target);
+    return { success: true };
+  });
+  app.post("/api/room/:code/unban", async (req) => {
+    const { u, r } = await admin(req, req.params.code),
+      target = String(req.body?.targetIdentity || "");
+    await targetMember(r, u, target);
+    await prisma.roomBan.deleteMany({
+      where: { roomId: r.id, identity: target },
+    });
     return { success: true };
   });
   app.post("/api/room/:code/mute", async (req) => {
     const { u, r } = await admin(req, req.params.code),
       target = String(req.body?.targetIdentity || "");
-    if (!/^[a-f0-9]{24}$/.test(target) || target === idFor(r.code, u))
-      throw fail(400, "Выберите другого участника");
-    const muted = req.body?.muted !== false;
-    const p = await lk.getParticipant(r.code, target);
-    await lk.updateParticipant(r.code, target, {
-      permission: {
-        ...p.permission,
-        canPublish: !muted,
-        canPublishSources: muted
-          ? []
-          : [
-              TrackSource.MICROPHONE,
-              TrackSource.SCREEN_SHARE,
-              TrackSource.SCREEN_SHARE_AUDIO,
-            ],
-        canPublishData: true,
-      },
+    await targetMember(r, u, target);
+    if (typeof req.body?.muted !== "boolean")
+      throw fail(400, "Укажите состояние микрофона");
+    const muted = req.body.muted;
+    await prisma.roomParticipantName.update({
+      where: { roomId_identity: { roomId: r.id, identity: target } },
+      data: { microphoneBlocked: muted },
     });
-    for (const track of p.tracks || [])
-      if (track.source === 2)
-        await lk
-          .mutePublishedTrack(r.code, target, track.sid, muted)
-          .catch(() => {});
+    await enforceMicrophone(r, target, muted);
     return { success: true, muted };
+  });
+  app.get("/api/room/:code/moderation", async (req) => {
+    const { r } = await admin(req, req.params.code);
+    const [bans, names] = await Promise.all([
+      prisma.roomBan.findMany({ where: { roomId: r.id } }),
+      prisma.roomParticipantName.findMany({ where: { roomId: r.id } }),
+    ]);
+    return {
+      isLocked: r.isLocked,
+      members: names.map((n) => ({
+        identity: n.identity,
+        microphoneBlocked: n.microphoneBlocked,
+      })),
+      bans: bans.map((b) => ({
+        identity: b.identity,
+        name:
+          names.find((n) => n.identity === b.identity)?.displayName || "Гость",
+      })),
+    };
+  });
+  app.post("/api/room/:code/lock", async (req) => {
+    const { r } = await admin(req, req.params.code);
+    if (typeof req.body?.locked !== "boolean")
+      throw fail(400, "Укажите состояние входа");
+    const locked = req.body.locked;
+    if (r.isLocked === locked) return { success: true, isLocked: locked };
+    const admitted = locked
+      ? (await lk.listParticipants(r.code)).map((p) => p.identity)
+      : [];
+    await prisma.$transaction(async (tx) => {
+      await tx.roomParticipantName.updateMany({
+        where: { roomId: r.id },
+        data: { allowedWhileLocked: false },
+      });
+      if (locked && admitted.length)
+        await tx.roomParticipantName.updateMany({
+          where: { roomId: r.id, identity: { in: admitted } },
+          data: { allowedWhileLocked: true },
+        });
+      await tx.room.update({ where: { id: r.id }, data: { isLocked: locked } });
+    });
+    // Close the window between the media snapshot and the database transaction.
+    if (locked)
+      for (const p of await lk.listParticipants(r.code))
+        if (!admitted.includes(p.identity) && !managerIdentity(r, p.identity))
+          await removeParticipant(r.code, p.identity);
+    return { success: true, isLocked: locked };
   });
   app.get("/api/rooms/public", async () => {
     const records = await prisma.room.findMany({
@@ -630,10 +763,18 @@ export async function buildApp({
   // One-time safety transition: old private invitations had no server admission proof.
   // Current rooms with accessHash survive normal restarts.
   for (const legacy of await prisma.room.findMany({
-    where: { isPersistent: false, isActive: true, encrypted: true, accessHash: null },
+    where: {
+      isPersistent: false,
+      isActive: true,
+      encrypted: true,
+      accessHash: null,
+    },
   })) {
     await lk.deleteRoom(legacy.code).catch(() => {});
-    await prisma.room.update({ where: { id: legacy.id }, data: { isActive: false } });
+    await prisma.room.update({
+      where: { id: legacy.id },
+      data: { isActive: false },
+    });
   }
   for (const name of (env.PERSISTENT_ROOMS || "Общая 1|Общая 2|Общая 3")
     .split("|")

@@ -22,3 +22,6 @@ android/local.properties
 *.apk
 *.zip
 __pycache__/
+
+.impeccable/runtime/
+.impeccable/copy-review.txt

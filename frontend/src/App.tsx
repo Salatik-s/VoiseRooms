@@ -8,10 +8,18 @@ import {
 import { RoomContext } from "@livekit/components-react";
 import { api, tg, keyFor, enc, invite, admissionProof, digest } from "./client";
 import type { Info, Token } from "./client";
+import { friendlyError, readResponse, offlineMessage } from "./errors";
 import { Icons } from "./Icons";
 import { LegalPage, LegalLinks } from "./Legal";
 import "./styles.css";
 import "./repairs.css";
+import { AudioLines, ArrowUpRight } from "lucide-react";
+const CallPreview = import.meta.env.DEV
+  ? lazy(() => import("./CallPreview"))
+  : null;
+const isPreview =
+  import.meta.env.DEV &&
+  new URLSearchParams(location.search).get("preview") === "call";
 const Call = lazy(() => import("./Call"));
 export default function App() {
   const [code, setCode] = useState(
@@ -26,16 +34,29 @@ export default function App() {
     [error, setError] = useState(""),
     [status, setStatus] = useState(""),
     [screen, setScreen] = useState("main"),
-    [lang, setLang] = useState<"ru" | "en">("ru");
+    [lang, setLang] = useState<"ru" | "en">("ru"),
+    [joinWithMic, setJoinWithMic] = useState(true);
+  useEffect(() => {
+    const offline = () => setError(offlineMessage);
+    const online = () =>
+      setError((current) => (current === offlineMessage ? "" : current));
+    window.addEventListener("offline", offline);
+    window.addEventListener("online", online);
+    return () => {
+      window.removeEventListener("offline", offline);
+      window.removeEventListener("online", online);
+    };
+  }, []);
   const en = lang === "en";
   const resource = useRef<{ room: Room; worker?: Worker } | null>(null);
   useEffect(() => {
+    if (isPreview) return;
     tg?.ready();
     tg?.expand();
     fetch("/api/rooms/public")
-      .then((r) => r.json())
+      .then(readResponse)
       .then((d) => setRooms(d.rooms || []))
-      .catch(() => setError("Публичные комнаты временно недоступны"));
+      .catch((e) => setError(friendlyError(e)));
     return () => {
       resource.current?.room.disconnect();
       resource.current?.worker?.terminate();
@@ -50,12 +71,11 @@ export default function App() {
     if (k && /^[\w-]{43}$/.test(k)) sessionStorage.setItem("vr-key-" + code, k);
     fetch("/api/room/" + encodeURIComponent(code))
       .then(async (r) => {
-        const d = await r.json();
-        if (!r.ok) throw Error(d.error);
+        const d = await readResponse(r);
         setInfo(d);
         setScreen("ready");
       })
-      .catch((e) => setError(e.message));
+      .catch((e) => setError(friendlyError(e)));
   }, [code]);
   async function run(fn: () => Promise<void>) {
     setError("");
@@ -63,7 +83,7 @@ export default function App() {
     try {
       await fn();
     } catch (e) {
-      setError((e as Error).message);
+      setError(friendlyError(e));
     } finally {
       setBusy(false);
     }
@@ -117,9 +137,15 @@ export default function App() {
       );
       worker?.terminate();
     });
-    room.on(RoomEvent.EncryptionError, (e) =>
-      setError("Ошибка шифрования: " + e.message),
+    room.on(RoomEvent.EncryptionError, () =>
+      setError(
+        "Не удалось защитить разговор. Выйдите и войдите заново по полной ссылке-приглашению.",
+      ),
     );
+    room.on(RoomEvent.Reconnecting, () =>
+      setError("Связь прервалась. Пытаемся подключиться снова…"),
+    );
+    room.on(RoomEvent.Reconnected, () => setError(""));
     try {
       if (worker) await room.setE2EEEnabled(true);
       await room.connect(d.livekitUrl, d.token);
@@ -128,16 +154,15 @@ export default function App() {
       setCall(room);
       setStatus("");
       try {
-        await room.localParticipant.setMicrophoneEnabled(true);
-      } catch {
-        setError(
-          "Микрофон не разрешён. Вы в комнате: разрешите доступ или слушайте без микрофона.",
-        );
+        if (joinWithMic && !d.microphoneBlocked)
+          await room.localParticipant.setMicrophoneEnabled(true);
+      } catch (e) {
+        setError(friendlyError(e, "microphone"));
       }
     } catch (e) {
       await room.disconnect();
       worker?.terminate();
-      throw e;
+      throw Error(friendlyError(e, "connect"));
     }
   }
   function openInput() {
@@ -151,6 +176,12 @@ export default function App() {
     if (!c) throw Error("Вставьте приглашение или код публичной комнаты");
     select(c, key);
   }
+  if (isPreview && CallPreview)
+    return (
+      <Suspense fallback={<p className="preview-loading">Открываем пример…</p>}>
+        <CallPreview />
+      </Suspense>
+    );
   if (["/privacy", "/terms"].includes(location.pathname)) return <LegalPage />;
   return (
     <>
@@ -177,6 +208,20 @@ export default function App() {
         </div>
       ) : (
         <div className="landing">
+          <header className="lobby-topbar">
+            <a className="wordmark" href="/">
+              <AudioLines size={23} />
+              VoiceRooms
+            </a>
+            <a
+              href="https://t.me/vidagram_bot"
+              target="_blank"
+              rel="noreferrer"
+              className="telegram-link"
+            >
+              Открыть в Telegram <ArrowUpRight size={17} />
+            </a>
+          </header>
           {screen === "main" ? (
             <>
               <div className="landing-top">
@@ -184,11 +229,11 @@ export default function App() {
                   <div className="logo-icon">
                     <Icons.Mic />
                   </div>
-                  <h1>VoiceRooms</h1>
+                  <h1>{en ? "A place to talk" : "На связи со своими"}</h1>
                   <p className="landing-subtitle">
                     {en
-                      ? "Voice rooms by invitation"
-                      : "Голосовые комнаты по приглашению"}
+                      ? "Create a room. Share a link. Talk."
+                      : "Создайте комнату. Отправьте ссылку. Поговорите."}
                   </p>
                 </div>
                 <div className="landing-top-actions">
@@ -217,7 +262,7 @@ export default function App() {
                     <span className="action-desc">
                       {en
                         ? "Private conversation with end-to-end encryption"
-                        : "Приватный разговор со сквозным шифрованием"}
+                        : "Закрытый разговор по вашей ссылке"}
                     </span>
                   </div>
                 </button>
@@ -245,6 +290,13 @@ export default function App() {
                     <Icons.Users />
                     {en ? "Public rooms" : "Публичные комнаты"}
                   </h3>
+                  {!rooms.length && (
+                    <p className="empty-rooms">
+                      {en
+                        ? "No public rooms are available right now."
+                        : "Сейчас нет доступных публичных комнат."}
+                    </p>
+                  )}
                   {rooms.map((r) => (
                     <button
                       className="room-card"
@@ -263,7 +315,7 @@ export default function App() {
                   <p className="hint-text public-note">
                     {en
                       ? "Public rooms use transport encryption, without E2EE."
-                      : "Публичные комнаты защищены транспортным шифрованием, без E2EE."}
+                      : "В публичных комнатах нет сквозного шифрования."}
                   </p>
                 </div>
                 <a
@@ -278,7 +330,7 @@ export default function App() {
                   <small>
                     {en
                       ? "Send the suggested invitation — the room is ready."
-                      : "Отправьте предложенное приглашение — комната готова."}
+                      : "Выберите приглашение и отправьте друзьям."}
                   </small>
                 </a>
               </div>
@@ -342,16 +394,28 @@ export default function App() {
                           {info.encrypted
                             ? en
                               ? "Private room · E2EE"
-                              : "Приватная комната · E2EE"
+                              : "Приватная комната · сквозное шифрование"
                             : en
                               ? "Public room · no E2EE"
-                              : "Публичная комната · без E2EE"}
+                              : "Публичная комната · без сквозного шифрования"}
                         </p>
                         <p className="hint-text">
                           {en
                             ? "Allow microphone access after joining, or listen without it."
                             : "После входа разрешите микрофон или слушайте без него."}
                         </p>
+                        <label className="prejoin-mic">
+                          <input
+                            type="checkbox"
+                            checked={joinWithMic}
+                            onChange={(e) => setJoinWithMic(e.target.checked)}
+                          />
+                          <span>
+                            {en
+                              ? "Enable microphone on entry"
+                              : "Включить микрофон при входе"}
+                          </span>
+                        </label>
                         <button
                           className="btn btn-primary"
                           disabled={busy}
@@ -409,6 +473,11 @@ export default function App() {
                 : "Сквозное шифрование в приватных комнатах"}
             </span>
           </div>
+          {import.meta.env.DEV && (
+            <a className="preview-link" href="/?preview=call">
+              Посмотреть пример звонка <ArrowUpRight size={16} />
+            </a>
+          )}
           <LegalLinks />
         </div>
       )}

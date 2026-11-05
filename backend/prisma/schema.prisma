@@ -31,6 +31,7 @@ model Room {
   code            String    @unique // код комнаты (8 символов) или имя постоянной
   name            String    // название комнаты
   isPersistent    Boolean   @default(false) // постоянная или временная
+  isLocked        Boolean   @default(false)
   isActive        Boolean   @default(true) // активна ли
   ownerTgId       BigInt?   // Telegram ID создателя (null для постоянных)
   maxParticipants Int       @default(20) // лимит участников
@@ -70,6 +71,8 @@ model Connection {
 
 // Имена участников в комнатах (серверное хранение имён)
 model RoomParticipantName {
+  microphoneBlocked Boolean @default(false)
+  allowedWhileLocked Boolean @default(false)
   id            Int       @id @default(autoincrement())
   roomId        Int
   identity      String    // HMAC-псевдоним участника внутри комнаты

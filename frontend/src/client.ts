@@ -1,3 +1,4 @@
+import { readResponse } from "./errors.ts";
 declare global {
   interface Window {
     Telegram?: {
@@ -22,8 +23,7 @@ export async function headers(): Promise<Record<string, string>> {
   if (tg?.initData) return { "X-Telegram-Init-Data": tg.initData };
   if (!session) {
     const r = await fetch("/api/session");
-    if (!r.ok) throw Error("Не удалось создать сессию");
-    session = (await r.json()).token;
+    session = (await readResponse(r)).token;
     sessionStorage.setItem("vr-session", session);
   }
   return { Authorization: "Bearer " + session };
@@ -38,9 +38,7 @@ export async function api(
     headers: { ...(await headers()), "Content-Type": "application/json" },
     body: body ? JSON.stringify(body) : undefined,
   });
-  const d = await r.json();
-  if (!r.ok) throw Error(d.error || "Ошибка сервиса");
-  return d;
+  return readResponse(r);
 }
 export const keyFor = (code: string) =>
   sessionStorage.getItem("vr-key-" + code) || "";
@@ -72,6 +70,7 @@ export type Token = {
   livekitUrl: string;
   room: string;
   isAdmin: boolean;
+  microphoneBlocked?: boolean;
   identity: string;
   encrypted: boolean;
 };

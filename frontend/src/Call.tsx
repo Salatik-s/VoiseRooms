@@ -8,6 +8,14 @@ import {
   VideoTrack,
   isTrackReference,
 } from "@livekit/components-react";
+import {
+  MemberActions,
+  RoomControls,
+  type ModerationState,
+} from "./RoomManagement";
+import { friendlyError, readResponse, type ErrorContext } from "./errors";
+import { RoomView } from "./RoomView";
+import { Paperclip, Send } from "lucide-react";
 import { api, headers, keyFor, enc, dec, invite } from "./client";
 import type { Token, Message } from "./client";
 export default function Call({
@@ -31,13 +39,52 @@ export default function Call({
     [name, setName] = useState(own.name || ""),
     [pending, setPending] = useState(false),
     [notice, setNotice] = useState("");
+  const [panel, setPanel] = useState<"chat" | "people" | null>(null);
+  const [moderation, setModeration] = useState<ModerationState | null>(null);
+  const micAllowed = () =>
+    own.permissions?.canPublish !== false &&
+    (!own.permissions?.canPublishSources.length ||
+      own.permissions.canPublishSources.includes(
+        Track.sourceToProto(Track.Source.Microphone),
+      ));
+  const [canUseMic, setCanUseMic] = useState(micAllowed);
+  async function refreshModeration() {
+    setModeration(
+      await api("/room/" + encodeURIComponent(code) + "/moderation"),
+    );
+  }
+  useEffect(() => {
+    if (!token.isAdmin || panel !== "people") return;
+    let active = true;
+    const refresh = () =>
+      api("/room/" + encodeURIComponent(code) + "/moderation")
+        .then((d) => {
+          if (active) setModeration(d);
+        })
+        .catch((e) => {
+          if (active) onError(friendlyError(e));
+        });
+    void refresh();
+    const timer = setInterval(refresh, 6000);
+    return () => {
+      active = false;
+      clearInterval(timer);
+    };
+  }, [panel, token.isAdmin, code]);
+  async function moderate(path: string, body: unknown) {
+    await api("/room/" + encodeURIComponent(code) + path, body);
+    await refreshModeration();
+  }
   const fileInput = useRef<HTMLInputElement>(null);
-  async function action(fn: () => Promise<void>) {
+  async function action(
+    fn: () => Promise<void>,
+    context: ErrorContext = "general",
+  ) {
     setPending(true);
     try {
       await fn();
     } catch (e) {
-      onError((e as Error).message);
+      onError(friendlyError(e, context));
     } finally {
       setPending(false);
     }
@@ -72,6 +119,7 @@ export default function Call({
     };
     const update = () => {
       setMic(own.isMicrophoneEnabled);
+      setCanUseMic(micAllowed());
       setSharing(own.isScreenShareEnabled);
     };
     room.on(RoomEvent.DataReceived, receive);
@@ -79,12 +127,14 @@ export default function Call({
     room.on(RoomEvent.LocalTrackUnpublished, update);
     room.on(RoomEvent.TrackMuted, update);
     room.on(RoomEvent.TrackUnmuted, update);
+    room.on(RoomEvent.ParticipantPermissionsChanged, update);
     return () => {
       room.off(RoomEvent.DataReceived, receive);
       room.off(RoomEvent.LocalTrackPublished, update);
       room.off(RoomEvent.LocalTrackUnpublished, update);
       room.off(RoomEvent.TrackMuted, update);
       room.off(RoomEvent.TrackUnmuted, update);
+      room.off(RoomEvent.ParticipantPermissionsChanged, update);
     };
   }, [room]);
   async function send() {
@@ -126,8 +176,7 @@ export default function Call({
         headers: await headers(),
         body: form,
       }),
-      d = await r.json();
-    if (!r.ok) throw Error(d.error);
+      d = await readResponse(r);
     const f = { id: d.fileId, name: file.name.slice(0, 150), iv: enc(iv) };
     await own.publishData(
       new TextEncoder().encode(JSON.stringify({ type: "file", file: f })),
@@ -140,7 +189,11 @@ export default function Call({
   }
   async function download(f: NonNullable<Message["file"]>) {
     const r = await fetch("/api/files/" + f.id, { headers: await headers() });
-    if (!r.ok) throw Error("Файл недоступен: срок хранения — 5 минут");
+    if (r.status === 410)
+      throw Error(
+        "Файл уже удалён. Он доступен только 5 минут. Попросите отправить его заново.",
+      );
+    if (!r.ok) await readResponse(r);
     const plain = await crypto.subtle.decrypt(
         { name: "AES-GCM", iv: dec(f.iv) },
         await fileKey(),
@@ -154,239 +207,291 @@ export default function Call({
     setTimeout(() => URL.revokeObjectURL(url), 10000);
   }
   return (
-    <section className="call">
+    <>
       <RoomAudioRenderer />
       <StartAudio label="Включить звук" />
-      <div className="section-heading">
-        <div>
-          <p className="eyebrow">
-            {token.encrypted
-              ? "СКВОЗНОЕ ШИФРОВАНИЕ · E2EE"
-              : "ПУБЛИЧНАЯ КОМНАТА · TLS"}
-          </p>
-          <h1 className="call-title">Разговор в комнате</h1>
-          <span className="muted">
-            {participants.length} участников · {code}
-          </span>
-        </div>
-        <button
-          onClick={() =>
-            action(async () => {
-              await navigator.clipboard.writeText(invite(code));
-              setNotice("Приглашение скопировано");
-            })
-          }
-        >
-          Пригласить ↗
-        </button>
-      </div>
-      {notice && <p role="status">{notice}</p>}
-      <div className="call-tools">
-        <button
-          className={mic ? "primary" : ""}
-          disabled={pending || own.permissions?.canPublish === false}
-          onClick={() =>
-            action(async () => {
-              await own.setMicrophoneEnabled(!own.isMicrophoneEnabled);
-              setMic(own.isMicrophoneEnabled);
-            })
-          }
-        >
-          {mic ? "Выключить микрофон" : "Включить микрофон"}
-        </button>
-        <button
-          disabled={pending}
-          onClick={() =>
-            action(async () => {
-              if (!navigator.mediaDevices?.getDisplayMedia)
-                throw Error(
-                  "Демонстрация экрана недоступна в этом браузере. Попробуйте Chrome на компьютере.",
-                );
-              await own.setScreenShareEnabled(!own.isScreenShareEnabled, {
-                audio: true,
-              });
-              setSharing(own.isScreenShareEnabled);
-            })
-          }
-        >
-          {sharing ? "Остановить показ" : "Показать экран"}
-        </button>
-        <button className="danger" onClick={() => room.disconnect()}>
-          Выйти
-        </button>
-      </div>
-      <div className="screens">
-        {tracks.filter(isTrackReference).map((t) => (
-          <VideoTrack key={t.publication.trackSid} trackRef={t} />
-        ))}
-      </div>
-      <div className="room-grid">
-        <div className="panel">
-          <h2>Участники</h2>
-          <label htmlFor="room-name">Ваше имя в этой комнате</label>
-          <div className="input-row">
-            <input
-              id="room-name"
-              value={name}
-              maxLength={30}
-              onChange={(e) => setName(e.target.value)}
-            />
-            <button
-              disabled={pending}
-              onClick={() =>
-                action(async () => {
-                  await api("/room/" + encodeURIComponent(code) + "/name", {
-                    displayName: name,
-                  });
-                  setNotice("Имя сохранено для этой комнаты");
-                })
-              }
-            >
-              Сохранить
-            </button>
-          </div>
-          <ul className="participants">
-            {participants.map((p) => (
-              <li key={p.identity}>
-                <span className={"avatar " + (p.isSpeaking ? "speaking" : "")}>
-                  {Array.from(p.name || "Г")[0]}
-                </span>
-                <div>
-                  <b>{p.name || "Гость"}</b>
-                  {p.metadata?.includes("service_owner") && (
-                    <small className="role-label">Владелец сервиса</small>
-                  )}
-                  {p.metadata?.includes("room_owner") && (
-                    <small className="role-label">Создатель комнаты</small>
-                  )}
-                  <small>
-                    {p.isLocal ? "Вы · " : ""}
-                    {p.isMicrophoneEnabled
-                      ? "Микрофон включён"
-                      : "Микрофон выключен"}
-                  </small>
-                </div>
-                {token.isAdmin && !p.isLocal && (
-                  <div className="moderation">
-                    <button
-                      disabled={pending}
-                      onClick={() =>
-                        action(async () => {
-                          await api(
-                            "/room/" + encodeURIComponent(code) + "/mute",
-                            {
-                              targetIdentity: p.identity,
-                              muted: p.permissions?.canPublish !== false,
-                            },
-                          );
-                          setNotice(
-                            "Права микрофона обновлены. Участник включает его самостоятельно.",
-                          );
-                        })
-                      }
-                    >
-                      {p.permissions?.canPublish === false
-                        ? "Разрешить"
-                        : "Запретить микрофон и экран"}
-                    </button>
-                    <button
-                      disabled={pending}
-                      className="danger"
-                      onClick={() =>
-                        action(async () => {
-                          await api(
-                            "/room/" + encodeURIComponent(code) + "/kick",
-                            { targetIdentity: p.identity },
-                          );
-                          setNotice("Участник удалён");
-                        })
-                      }
-                    >
-                      Удалить
-                    </button>
-                  </div>
-                )}
-              </li>
+      <RoomView
+        title="Разговор в комнате"
+        subtitle={`${participants.length} в комнате · ${code}`}
+        encrypted={token.encrypted}
+        people={participants.map((p) => ({
+          id: p.identity,
+          name: p.name || "Гость",
+          local: p.isLocal,
+          speaking: p.isSpeaking,
+          muted: !p.isMicrophoneEnabled,
+          role: p.metadata?.includes("service_owner")
+            ? "Владелец сервиса"
+            : p.metadata?.includes("room_owner")
+              ? "Создатель комнаты"
+              : undefined,
+        }))}
+        mic={mic}
+        sharing={sharing}
+        pending={pending}
+        panel={panel}
+        onPanel={setPanel}
+        notice={notice}
+        canUseMic={canUseMic}
+        canShare={own.permissions?.canPublish !== false}
+        onMic={() =>
+          action(async () => {
+            await own.setMicrophoneEnabled(!own.isMicrophoneEnabled);
+            setMic(own.isMicrophoneEnabled);
+          }, "microphone")
+        }
+        onShare={() =>
+          action(async () => {
+            if (!navigator.mediaDevices?.getDisplayMedia)
+              throw Error(
+                "Демонстрация экрана недоступна. Откройте комнату в Chrome на компьютере.",
+              );
+            await own.setScreenShareEnabled(!own.isScreenShareEnabled, {
+              audio: true,
+            });
+            setSharing(own.isScreenShareEnabled);
+          }, "screen")
+        }
+        onLeave={() => {
+          void room.disconnect();
+        }}
+        onInvite={() =>
+          action(async () => {
+            await navigator.clipboard.writeText(invite(code));
+            setNotice("Приглашение скопировано");
+          }, "clipboard")
+        }
+        media={
+          <div className="screens">
+            {tracks.filter(isTrackReference).map((t) => (
+              <VideoTrack key={t.publication.trackSid} trackRef={t} />
             ))}
-          </ul>
-          {token.isAdmin && (
-            <button
-              className="danger"
-              onClick={() => {
-                if (confirm("Завершить разговор для всех участников?"))
-                  action(async () => {
-                    await api(
-                      "/room/" + encodeURIComponent(code) + "/close",
-                      {},
-                    );
-                    await room.disconnect();
-                  });
-              }}
-            >
-              Закрыть комнату для всех
-            </button>
-          )}
-        </div>
-        <div className="panel chat">
-          <h2>Чат комнаты</h2>
-          <p className="muted small">
-            Сообщения доступны только во время разговора. Файлы удаляются через
-            5 минут.
-          </p>
-          <div className="messages" aria-live="polite">
-            {messages.length ? (
-              messages.map((m) => (
-                <div className={"message " + (m.self ? "self" : "")} key={m.id}>
-                  <small>{m.name}</small>
-                  {m.text ? (
-                    <p>{m.text}</p>
-                  ) : (
-                    <button onClick={() => action(() => download(m.file!))}>
-                      Скачать {m.file?.name}
-                    </button>
-                  )}
-                </div>
-              ))
-            ) : (
-              <p className="muted">Здесь пока тихо. Напишите первым.</p>
-            )}
           </div>
-          <form
-            onSubmit={(e) => {
-              e.preventDefault();
-              action(send);
-            }}
-          >
-            <input
-              aria-label="Сообщение"
-              value={text}
-              maxLength={2000}
-              onChange={(e) => setText(e.target.value)}
-              placeholder="Написать сообщение…"
-            />
-            <button disabled={pending || !text.trim()}>Отправить</button>
-          </form>
-          {token.encrypted && (
-            <>
+        }
+      >
+        {panel === "people" ? (
+          <div className="sidebar-content call-management">
+            <label htmlFor="room-name">Ваше имя в этой комнате</label>
+            <div className="input-row">
               <input
-                ref={fileInput}
-                type="file"
-                hidden
-                onChange={(e) => {
-                  action(() => upload(e.target.files?.[0]));
-                  e.target.value = "";
-                }}
+                id="room-name"
+                value={name}
+                maxLength={30}
+                onChange={(e) => setName(e.target.value)}
               />
               <button
                 disabled={pending}
-                onClick={() => fileInput.current?.click()}
+                onClick={() =>
+                  action(async () => {
+                    await api("/room/" + encodeURIComponent(code) + "/name", {
+                      displayName: name,
+                    });
+                    setNotice("Имя сохранено для этой комнаты");
+                  })
+                }
               >
-                Прикрепить зашифрованный файл
+                Сохранить
               </button>
-            </>
-          )}
-        </div>
-      </div>
-    </section>
+            </div>
+            <ul className="participants">
+              {participants.map((p) => (
+                <li key={p.identity}>
+                  <span
+                    className={"avatar " + (p.isSpeaking ? "speaking" : "")}
+                  >
+                    {Array.from(p.name || "Г")[0]}
+                  </span>
+                  <div>
+                    <b>{p.name || "Гость"}</b>
+                    {p.metadata?.includes("service_owner") && (
+                      <small className="role-label">Владелец сервиса</small>
+                    )}
+                    {p.metadata?.includes("room_owner") && (
+                      <small className="role-label">Создатель комнаты</small>
+                    )}
+                    <small>
+                      {p.isLocal ? "Вы · " : ""}
+                      {p.isMicrophoneEnabled
+                        ? "Микрофон включён"
+                        : "Микрофон выключен"}
+                    </small>
+                  </div>
+                  {token.isAdmin &&
+                    !p.isLocal &&
+                    !p.metadata?.includes("room_owner") &&
+                    !p.metadata?.includes("service_owner") &&
+                    moderation && (
+                      <MemberActions
+                        name={p.name || "Гость"}
+                        blocked={
+                          moderation.members.find(
+                            (m) => m.identity === p.identity,
+                          )?.microphoneBlocked || false
+                        }
+                        pending={pending}
+                        onMute={() =>
+                          action(async () => {
+                            const muted = !moderation.members.find(
+                              (m) => m.identity === p.identity,
+                            )?.microphoneBlocked;
+                            await moderate("/mute", {
+                              targetIdentity: p.identity,
+                              muted,
+                            });
+                            setNotice(
+                              muted
+                                ? "Микрофон запрещён в этой комнате"
+                                : "Микрофон разрешён. Участник включает его сам.",
+                            );
+                          })
+                        }
+                        onKick={() =>
+                          action(async () => {
+                            await moderate("/kick", {
+                              targetIdentity: p.identity,
+                            });
+                            setNotice(
+                              "Участник удалён. При открытом входе он сможет вернуться.",
+                            );
+                          })
+                        }
+                        onBan={() =>
+                          action(async () => {
+                            await moderate("/ban", {
+                              targetIdentity: p.identity,
+                            });
+                            setNotice(
+                              "Вход участника в эту комнату заблокирован",
+                            );
+                          })
+                        }
+                      />
+                    )}
+                </li>
+              ))}
+            </ul>
+            {token.isAdmin && !moderation && (
+              <p className="management-note" role="status">
+                Загружаем управление комнатой…
+              </p>
+            )}
+            {token.isAdmin && moderation && (
+              <RoomControls
+                state={moderation}
+                pending={pending}
+                onLock={() =>
+                  action(async () => {
+                    const locked = !moderation.isLocked;
+                    await moderate("/lock", { locked });
+                    setNotice(
+                      locked
+                        ? "Вход новых участников закрыт"
+                        : "Вход по приглашению открыт",
+                    );
+                  })
+                }
+                onUnban={(identity) =>
+                  action(async () => {
+                    await moderate("/unban", { targetIdentity: identity });
+                    setNotice("Участник разблокирован");
+                  })
+                }
+                onClose={() => {
+                  if (
+                    confirm(
+                      "Завершить разговор для всех? Приглашение перестанет действовать.",
+                    )
+                  )
+                    action(async () => {
+                      await api(
+                        "/room/" + encodeURIComponent(code) + "/close",
+                        {},
+                      );
+                      await room.disconnect();
+                    });
+                }}
+              />
+            )}
+          </div>
+        ) : (
+          <>
+            <p className="sidebar-description">
+              Сообщения доступны во время разговора. Файлы удаляются через 5
+              минут.
+            </p>
+            <div className="chat-messages" aria-live="polite">
+              {messages.length ? (
+                messages.map((m) => (
+                  <article
+                    className={`chat-bubble ${m.self ? "self" : ""}`}
+                    key={m.id}
+                  >
+                    <b>{m.name}</b>
+                    {m.text ? (
+                      <p>{m.text}</p>
+                    ) : (
+                      <button
+                        className="text-link"
+                        onClick={() => action(() => download(m.file!), "file")}
+                      >
+                        Скачать {m.file?.name}
+                      </button>
+                    )}
+                  </article>
+                ))
+              ) : (
+                <p className="chat-system">
+                  Здесь появятся сообщения участников.
+                </p>
+              )}
+            </div>
+            <form
+              className="chat-composer"
+              onSubmit={(e) => {
+                e.preventDefault();
+                action(send);
+              }}
+            >
+              {token.encrypted && (
+                <>
+                  <input
+                    ref={fileInput}
+                    type="file"
+                    hidden
+                    onChange={(e) => {
+                      action(() => upload(e.target.files?.[0]), "file");
+                      e.target.value = "";
+                    }}
+                  />
+                  <button
+                    type="button"
+                    className="icon-button"
+                    aria-label="Прикрепить зашифрованный файл"
+                    disabled={pending}
+                    onClick={() => fileInput.current?.click()}
+                  >
+                    <Paperclip size={20} />
+                  </button>
+                </>
+              )}
+              <input
+                aria-label="Сообщение"
+                placeholder="Сообщение…"
+                value={text}
+                maxLength={2000}
+                onChange={(e) => setText(e.target.value)}
+              />
+              <button
+                className="send-button"
+                aria-label="Отправить сообщение"
+                disabled={pending || !text.trim()}
+              >
+                <Send size={20} />
+              </button>
+            </form>
+          </>
+        )}
+      </RoomView>
+    </>
   );
 }

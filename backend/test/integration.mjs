@@ -198,6 +198,127 @@ try {
   assert.equal((await req("GET", file.url, foreign)).status, 410);
   checks++;
   const ident = minted.data.identity;
+  // Exercise persistent moderation against the actual PostgreSQL schema and LiveKit API.
+  for (const action of ["mute", "kick", "ban", "unban", "lock"])
+    assert.equal(
+      (
+        await req("POST", `/api/room/${r.code}/${action}`, foreign, {
+          targetIdentity: ident,
+          muted: true,
+          locked: true,
+        })
+      ).status,
+      403,
+    );
+  checks++;
+  assert.equal(
+    (
+      await req("POST", `/api/room/${r.code}/mute`, own, {
+        targetIdentity: ident,
+        muted: true,
+      })
+    ).status,
+    200,
+  );
+  const restricted = await req("POST", "/api/token", foreign, {
+    room: r.code,
+    accessProof,
+  });
+  const restrictedClaims = await new TokenVerifier(
+    process.env.LIVEKIT_API_KEY,
+    process.env.LIVEKIT_API_SECRET,
+  ).verify(restricted.data.token);
+  assert.equal(
+    restrictedClaims.video.canPublishSources.includes("microphone"),
+    false,
+  );
+  checks++;
+  assert.equal(
+    (
+      await req("POST", `/api/room/${r.code}/mute`, own, {
+        targetIdentity: ident,
+        muted: false,
+      })
+    ).status,
+    200,
+  );
+  checks++;
+  assert.equal(
+    (
+      await req("POST", `/api/room/${r.code}/kick`, own, {
+        targetIdentity: ident,
+      })
+    ).status,
+    200,
+  );
+  assert.equal(
+    (await req("POST", "/api/token", foreign, { room: r.code, accessProof }))
+      .status,
+    200,
+  );
+  checks++;
+  assert.equal(
+    (
+      await req("POST", `/api/room/${r.code}/ban`, own, {
+        targetIdentity: ident,
+      })
+    ).status,
+    200,
+  );
+  assert.equal(
+    (await req("POST", "/api/token", foreign, { room: r.code, accessProof }))
+      .status,
+    403,
+  );
+  checks++;
+  assert.equal(
+    (await req("GET", `/api/room/${r.code}/moderation`, own)).data.bans[0]
+      .identity,
+    ident,
+  );
+  checks++;
+  assert.equal(
+    (
+      await req("POST", `/api/room/${r.code}/unban`, own, {
+        targetIdentity: ident,
+      })
+    ).status,
+    200,
+  );
+  assert.equal(
+    (await req("POST", "/api/token", foreign, { room: r.code, accessProof }))
+      .status,
+    200,
+  );
+  checks++;
+  assert.equal(
+    (await req("POST", `/api/room/${r.code}/lock`, own, { locked: true }))
+      .status,
+    200,
+  );
+  assert.equal(
+    (await req("POST", "/api/token", foreign, { room: r.code, accessProof }))
+      .status,
+    403,
+  );
+  assert.equal(
+    (await req("POST", "/api/token", own, { room: r.code, accessProof }))
+      .status,
+    200,
+  );
+  checks++;
+  assert.equal(
+    (await req("POST", `/api/room/${r.code}/lock`, own, { locked: false }))
+      .status,
+    200,
+  );
+  assert.equal(
+    (await req("POST", "/api/token", foreign, { room: r.code, accessProof }))
+      .status,
+    200,
+  );
+  checks++;
+
   await db.roomBan.create({
     data: {
       roomId: (await db.room.findUnique({ where: { code: r.code } })).id,

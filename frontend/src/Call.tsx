@@ -14,9 +14,17 @@ import {
   type ModerationState,
 } from "./RoomManagement";
 import { friendlyError, readResponse, type ErrorContext } from "./errors";
-import { RoomView } from "./RoomView";
+import { RoomView, Avatar } from "./RoomView";
 import { Paperclip, Send } from "lucide-react";
-import { api, headers, keyFor, enc, dec, invite } from "./client";
+import {
+  api,
+  headers,
+  keyFor,
+  enc,
+  dec,
+  invite,
+  nativeCallState,
+} from "./client";
 import type { Token, Message } from "./client";
 export default function Call({
   room,
@@ -120,8 +128,10 @@ export default function Call({
     const update = () => {
       setMic(own.isMicrophoneEnabled);
       setCanUseMic(micAllowed());
+      nativeCallState(true, own.isMicrophoneEnabled);
       setSharing(own.isScreenShareEnabled);
     };
+    nativeCallState(true, own.isMicrophoneEnabled);
     room.on(RoomEvent.DataReceived, receive);
     room.on(RoomEvent.LocalTrackPublished, update);
     room.on(RoomEvent.LocalTrackUnpublished, update);
@@ -129,6 +139,7 @@ export default function Call({
     room.on(RoomEvent.TrackUnmuted, update);
     room.on(RoomEvent.ParticipantPermissionsChanged, update);
     return () => {
+      nativeCallState(false, false);
       room.off(RoomEvent.DataReceived, receive);
       room.off(RoomEvent.LocalTrackPublished, update);
       room.off(RoomEvent.LocalTrackUnpublished, update);
@@ -201,6 +212,19 @@ export default function Call({
       ),
       url = URL.createObjectURL(new Blob([plain])),
       a = document.createElement("a");
+    if (window.VoiceRoomsNative?.saveFile) {
+      URL.revokeObjectURL(url);
+      const bytes = new Uint8Array(plain);
+      let binary = "";
+      for (let i = 0; i < bytes.length; i += 32768)
+        binary += String.fromCharCode(...bytes.subarray(i, i + 32768));
+      window.VoiceRoomsNative.saveFile(
+        f.name,
+        btoa(binary),
+        "application/octet-stream",
+      );
+      return;
+    }
     a.href = url;
     a.download = f.name;
     a.click();
@@ -218,6 +242,7 @@ export default function Call({
           id: p.identity,
           name: p.name || "Гость",
           local: p.isLocal,
+          owner: p.metadata?.includes("service_owner"),
           speaking: p.isSpeaking,
           muted: !p.isMicrophoneEnabled,
           role: p.metadata?.includes("service_owner")
@@ -296,11 +321,14 @@ export default function Call({
             <ul className="participants">
               {participants.map((p) => (
                 <li key={p.identity}>
-                  <span
-                    className={"avatar " + (p.isSpeaking ? "speaking" : "")}
-                  >
-                    {Array.from(p.name || "Г")[0]}
-                  </span>
+                  <Avatar
+                    person={{
+                      id: p.identity,
+                      name: p.name || "Гость",
+                      speaking: p.isSpeaking,
+                      owner: p.metadata?.includes("service_owner"),
+                    }}
+                  />
                   <div>
                     <b>{p.name || "Гость"}</b>
                     {p.metadata?.includes("service_owner") && (
@@ -396,20 +424,26 @@ export default function Call({
                     setNotice("Участник разблокирован");
                   })
                 }
-                onClose={() => {
-                  if (
-                    confirm(
-                      "Завершить разговор для всех? Приглашение перестанет действовать.",
-                    )
-                  )
-                    action(async () => {
-                      await api(
-                        "/room/" + encodeURIComponent(code) + "/close",
-                        {},
-                      );
-                      await room.disconnect();
-                    });
-                }}
+                onCapacity={(n) =>
+                  action(async () => {
+                    await api(
+                      "/admin/room/" + encodeURIComponent(code) + "/limit",
+                      { maxParticipants: n },
+                      "PUT",
+                    );
+                    await refreshModeration();
+                    setNotice("Количество мест сохранено");
+                  })
+                }
+                onClose={() =>
+                  action(async () => {
+                    await api(
+                      "/room/" + encodeURIComponent(code) + "/close",
+                      {},
+                    );
+                    await room.disconnect();
+                  })
+                }
               />
             )}
           </div>

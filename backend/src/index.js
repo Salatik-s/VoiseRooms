@@ -30,6 +30,7 @@ export async function buildApp({
   env = process.env,
   prisma = new PrismaClient(),
   media,
+  clock = () => Date.now(),
 } = {}) {
   const secret = env.INTERNAL_KEY;
   if (!secret || secret.length < 32)
@@ -39,6 +40,15 @@ export async function buildApp({
   const maximum = Number(env.MAX_ROOM_PARTICIPANTS || 8);
   if (!Number.isInteger(maximum) || maximum < 2 || maximum > 100)
     throw Error("MAX_ROOM_PARTICIPANTS must be 2..100");
+  const ownerMaximum = Number(env.MAX_OWNER_ROOM_PARTICIPANTS || 100);
+  if (
+    !Number.isInteger(ownerMaximum) ||
+    ownerMaximum < maximum ||
+    ownerMaximum > 100
+  )
+    throw Error(
+      "MAX_OWNER_ROOM_PARTICIPANTS must be MAX_ROOM_PARTICIPANTS..100",
+    );
   const lk =
     media ||
     new RoomServiceClient(
@@ -94,16 +104,14 @@ export async function buildApp({
   );
   app.setErrorHandler((e, req, reply) => {
     const code = e.statusCode || 500;
-    reply
-      .code(code)
-      .send({
-        error:
-          code >= 500
-            ? "Сервис временно недоступен. Попробуйте позже."
-            : e.publicMessage ||
-              errorText[code] ||
-              "Не удалось выполнить действие. Попробуйте ещё раз.",
-      });
+    reply.code(code).send({
+      error:
+        code >= 500
+          ? "Сервис временно недоступен. Попробуйте позже."
+          : e.publicMessage ||
+            errorText[code] ||
+            "Не удалось выполнить действие. Попробуйте ещё раз.",
+    });
     if (code >= 500)
       app.log.error(
         { type: e.name, code: e.code || "UNKNOWN" },
@@ -152,20 +160,117 @@ export async function buildApp({
     encrypted: r.encrypted,
     maxParticipants: r.maxParticipants,
     expiresAt: r.expiresAt,
+    reopensAt: r.reopensAt || null,
   });
-  async function room(code) {
-    const r = await prisma.room.findUnique({ where: { code } });
+  const pendingRestart = (r) =>
+    !!r?.isPersistent && !r.isActive && !!r.reopensAt;
+  const restarting = new Map();
+  let shuttingDown = false;
+  async function deleteMediaRoom(code) {
+    await lk.deleteRoom(code).catch((e) => {
+      if (e.status !== 404 && e.code !== "not_found") throw e;
+    });
+  }
+  const createMediaRoom = (code) =>
+    lk.createRoom({
+      name: code,
+      maxParticipants: ownerMaximum,
+      emptyTimeout: 300,
+    });
+  async function reopenDueRooms() {
+    if (shuttingDown) return;
+    const due = await prisma.room.findMany({
+      where: {
+        isPersistent: true,
+        isActive: false,
+        reopensAt: { lte: new Date(clock()) },
+      },
+    });
+    if (shuttingDown) return;
+    for (const candidate of due) {
+      if (shuttingDown) return;
+      if (restarting.has(candidate.code)) {
+        await restarting.get(candidate.code);
+        continue;
+      }
+      const operation = (async () => {
+        const current = await prisma.room.findUnique({
+          where: { id: candidate.id },
+        });
+        if (
+          !pendingRestart(current) ||
+          new Date(current.reopensAt).getTime() > clock()
+        )
+          return;
+        await deleteMediaRoom(current.code);
+        await createMediaRoom(current.code);
+        await prisma.$transaction(async (tx) => {
+          await tx.roomParticipantName.updateMany({
+            where: { roomId: current.id },
+            data: { allowedWhileLocked: false, overLimitAllowed: false },
+          });
+          // A restart clears the call, while explicit participant bans remain until removed.
+          await tx.room.update({
+            where: { id: current.id },
+            data: { isActive: true, isLocked: false, reopensAt: null },
+          });
+        });
+      })();
+      restarting.set(candidate.code, operation);
+      try {
+        await operation;
+      } finally {
+        restarting.delete(candidate.code);
+      }
+    }
+  }
+  async function room(code, allowRestarting = false) {
+    let r = await prisma.room.findUnique({ where: { code } });
     if (!r) throw fail(404, "Комната не найдена");
-    if (!isActive(r))
-      throw fail(410, "Комната закрыта или срок приглашения истёк");
+    if (pendingRestart(r) && new Date(r.reopensAt).getTime() <= clock()) {
+      await reopenDueRooms();
+      r = await prisma.room.findUnique({ where: { code } });
+    }
+    if (!isActive(r) && !(allowRestarting && pendingRestart(r)))
+      throw fail(
+        410,
+        pendingRestart(r)
+          ? "Публичная комната перезапускается. Дождитесь окончания перезапуска."
+          : "Комната закрыта или срок приглашения истёк",
+      );
     return r;
   }
-  async function admin(req, code) {
+  async function admin(req, code, allowRestarting = false) {
     const u = await user(req),
-      r = await room(code);
+      r = await room(code, allowRestarting);
     if (u.id !== owner && r.ownerTgId !== BigInt(u.id))
       throw fail(403, "Управлять комнатой может только её создатель");
     return { u, r };
+  }
+  async function ensureMediaRoom(
+    r,
+    requestedLimit = r.maxParticipants,
+    connected,
+  ) {
+    const existing = (await lk.listRooms([r.code])).find(
+      (item) => item.name === r.code,
+    );
+    if (!existing) return createMediaRoom(r.code);
+    // Older deployed rooms may still have a smaller immutable media hard limit.
+    if (
+      existing.maxParticipants > 0 &&
+      existing.maxParticipants < requestedLimit
+    ) {
+      const people = connected || (await lk.listParticipants(r.code));
+      if (people.length)
+        throw fail(
+          409,
+          "Чтобы увеличить лимит этой комнаты, дождитесь выхода участников и повторите действие. Текущий разговор не будет прерван.",
+        );
+      await deleteMediaRoom(r.code);
+      return createMediaRoom(r.code);
+    }
+    return existing;
   }
   const publishSources = (blocked) => [
     ...(!blocked ? [TrackSource.MICROPHONE] : []),
@@ -240,6 +345,15 @@ export async function buildApp({
     { config: { rateLimit: { max: 20, timeWindow: "1 minute" } } },
     async () => ({ token: issueSession(guestId(), secret) }),
   );
+  app.get("/api/me", async (req) => {
+    const u = await user(req),
+      isServiceOwner = owner > 0 && u.id === owner;
+    return {
+      isServiceOwner,
+      isAnonymous: u.id < 0,
+      maxParticipantsLimit: isServiceOwner ? ownerMaximum : maximum,
+    };
+  });
   app.get("/api/health", async () => ({ status: "ok" }));
   app.get("/api/ready", async () => {
     await prisma.$queryRaw`SELECT 1`;
@@ -263,6 +377,20 @@ export async function buildApp({
       event = await receiver.receive(req.body, req.headers.authorization);
     } catch {
       throw fail(401, "Недействительная подпись события");
+    }
+    if (
+      event.event === "participant_left" &&
+      event.room?.name &&
+      event.participant?.identity
+    ) {
+      const r = await prisma.room.findUnique({
+        where: { code: event.room.name },
+      });
+      if (r)
+        await prisma.roomParticipantName.updateMany({
+          where: { roomId: r.id, identity: event.participant.identity },
+          data: { overLimitAllowed: false },
+        });
     }
     if (
       event.event === "participant_joined" &&
@@ -290,8 +418,12 @@ export async function buildApp({
       ) {
         await removeParticipant(event.room.name, identity);
       } else {
-        // Re-check persisted restrictions even for a media JWT minted before moderation.
-        await enforceMicrophone(r, identity, record.microphoneBlocked);
+        const connected = await lk.listParticipants(r.code);
+        if (connected.length > r.maxParticipants && !record.overLimitAllowed)
+          await removeParticipant(r.code, identity);
+        else
+          // Re-check persisted restrictions even for a media JWT minted before moderation.
+          await enforceMicrophone(r, identity, record.microphoneBlocked);
       }
     }
     return reply.code(200).send({ ok: true });
@@ -327,8 +459,8 @@ export async function buildApp({
       const u = await user(req),
         body = req.body || {},
         code = roomCode(),
-        ceiling = Number(env.MAX_ROOM_PARTICIPANTS || 8),
-        limit = Number(body.maxParticipants || ceiling);
+        ceiling = u.id === owner ? ownerMaximum : maximum,
+        limit = Number(body.maxParticipants ?? maximum);
       if (!Number.isInteger(limit) || limit < 2 || limit > ceiling)
         throw fail(400, "Лимит участников: от 2 до " + ceiling);
       if (
@@ -351,11 +483,7 @@ export async function buildApp({
           400,
           "Для приватной комнаты нужен защищённый ключ приглашения",
         );
-      await lk.createRoom({
-        name: code,
-        maxParticipants: limit,
-        emptyTimeout: 300,
-      });
+      await createMediaRoom(code);
       try {
         const r = await prisma.room.create({
           data: {
@@ -377,10 +505,10 @@ export async function buildApp({
   );
   app.post("/api/room/join", async (req) => {
     await user(req);
-    return publicRoom(await room(String(req.body?.code || "").trim()));
+    return publicRoom(await room(String(req.body?.code || "").trim(), true));
   });
   app.get("/api/room/:code", async (req) =>
-    publicRoom(await room(req.params.code)),
+    publicRoom(await room(req.params.code, true)),
   );
   app.post("/api/token", async (req) => {
     const u = await user(req),
@@ -420,11 +548,16 @@ export async function buildApp({
           ? "Владелец сервиса"
           : "Гость " + identity.slice(0, 4).toUpperCase()),
       isAdmin = u.id === owner || r.ownerTgId === BigInt(u.id);
-    await lk.createRoom({
-      name: r.code,
-      maxParticipants: r.maxParticipants,
-      emptyTimeout: 300,
-    });
+    await ensureMediaRoom(r);
+    const connected = await lk.listParticipants(r.code);
+    if (
+      !connected.some((p) => p.identity === identity) &&
+      connected.length >= r.maxParticipants
+    )
+      throw fail(
+        409,
+        "В комнате нет свободных мест. Дождитесь, пока кто-нибудь выйдет, или попросите увеличить лимит.",
+      );
     const at = new AccessToken(env.LIVEKIT_API_KEY, env.LIVEKIT_API_SECRET, {
       identity,
       name,
@@ -460,6 +593,7 @@ export async function buildApp({
       identity,
       isAdmin,
       isOwner: isAdmin,
+      isServiceOwner: owner > 0 && u.id === owner,
       microphoneBlocked: existing?.microphoneBlocked || false,
       encrypted: r.encrypted,
       maxParticipants: r.maxParticipants,
@@ -467,14 +601,14 @@ export async function buildApp({
   });
   async function close(req) {
     const { r } = await admin(req, req.params.code);
-    await lk.deleteRoom(r.code).catch((e) => {
-      if (e.status !== 404 && e.code !== "not_found") throw e;
-    });
+    const reopensAt = r.isPersistent ? new Date(clock() + 300000) : null;
+    // Persist the deadline first so it survives a process restart or media failure.
     await prisma.room.update({
       where: { id: r.id },
-      data: { isActive: false },
+      data: { isActive: false, isLocked: false, reopensAt },
     });
-    return { success: true };
+    await deleteMediaRoom(r.code);
+    return { success: true, reopensAt };
   }
   app.post("/api/room/:code/close", close);
   app.post("/api/admin/room/:code/close", close);
@@ -525,13 +659,16 @@ export async function buildApp({
     return { success: true, muted };
   });
   app.get("/api/room/:code/moderation", async (req) => {
-    const { r } = await admin(req, req.params.code);
+    const { u, r } = await admin(req, req.params.code);
     const [bans, names] = await Promise.all([
       prisma.roomBan.findMany({ where: { roomId: r.id } }),
       prisma.roomParticipantName.findMany({ where: { roomId: r.id } }),
     ]);
     return {
       isLocked: r.isLocked,
+      isPersistent: r.isPersistent,
+      maxParticipants: r.maxParticipants,
+      maxAllowedParticipants: u.id === owner ? ownerMaximum : maximum,
       members: names.map((n) => ({
         identity: n.identity,
         microphoneBlocked: n.microphoneBlocked,
@@ -572,30 +709,39 @@ export async function buildApp({
     return { success: true, isLocked: locked };
   });
   app.get("/api/rooms/public", async () => {
+    await reopenDueRooms();
     const records = await prisma.room.findMany({
-        where: { isPersistent: true, isActive: true },
+        where: { isPersistent: true },
       }),
-      live = await lk.listRooms(records.map((r) => r.code));
+      active = records.filter((r) => isActive(r)),
+      live = active.length ? await lk.listRooms(active.map((r) => r.code)) : [];
     return {
       rooms: records.map((r) => ({
         ...publicRoom(r),
-        participantCount:
-          live.find((l) => l.name === r.code)?.numParticipants || 0,
+        participantCount: isActive(r)
+          ? live.find((l) => l.name === r.code)?.numParticipants || 0
+          : 0,
       })),
     };
   });
   app.get("/api/admin/rooms", async (req) => {
     await globalAdmin(req);
-    const records = await prisma.room.findMany({ where: { isActive: true } }),
-      live = await lk.listRooms(records.map((r) => r.code));
+    await reopenDueRooms();
+    const records = (
+        await prisma.room.findMany({
+          where: { OR: [{ isActive: true }, { isPersistent: true }] },
+        })
+      ).filter((r) => isActive(r) || pendingRestart(r)),
+      active = records.filter((r) => isActive(r)),
+      live = active.length ? await lk.listRooms(active.map((r) => r.code)) : [];
     return {
-      rooms: records
-        .filter((r) => isActive(r))
-        .map((r) => ({
-          ...publicRoom(r),
-          participantCount:
-            live.find((l) => l.name === r.code)?.numParticipants || 0,
-        })),
+      maxParticipantsLimit: ownerMaximum,
+      rooms: records.map((r) => ({
+        ...publicRoom(r),
+        participantCount: isActive(r)
+          ? live.find((l) => l.name === r.code)?.numParticipants || 0
+          : 0,
+      })),
     };
   });
   app.get("/api/admin/stats", async (req) => {
@@ -619,24 +765,36 @@ export async function buildApp({
     };
   });
   app.put("/api/admin/room/:code/limit", async (req) => {
-    const { r } = await admin(req, req.params.code),
-      limit = Number(req.body?.maxParticipants);
-    if (!Number.isInteger(limit) || limit < 2 || limit > maximum)
-      throw fail(400, "Лимит: от 2 до " + maximum);
-    const participants = await lk.listParticipants(r.code);
-    if (participants.length)
-      throw fail(409, "Меняйте лимит до входа участников");
-    await lk.deleteRoom(r.code);
-    await lk.createRoom({
-      name: r.code,
+    const { u, r } = await admin(req, req.params.code, true),
+      limit = Number(req.body?.maxParticipants),
+      ceiling = u.id === owner ? ownerMaximum : maximum;
+    if (!Number.isInteger(limit) || limit < 2 || limit > ceiling)
+      throw fail(400, "Лимит участников: от 2 до " + ceiling);
+    const connected = isActive(r) ? await lk.listParticipants(r.code) : [];
+    if (isActive(r)) await ensureMediaRoom(r, limit, connected);
+    await prisma.$transaction(async (tx) => {
+      await tx.roomParticipantName.updateMany({
+        where: { roomId: r.id },
+        data: { overLimitAllowed: false },
+      });
+      if (limit < connected.length)
+        await tx.roomParticipantName.updateMany({
+          where: {
+            roomId: r.id,
+            identity: { in: connected.map((p) => p.identity) },
+          },
+          data: { overLimitAllowed: true },
+        });
+      await tx.room.update({
+        where: { id: r.id },
+        data: { maxParticipants: limit },
+      });
+    });
+    return {
+      success: true,
       maxParticipants: limit,
-      emptyTimeout: 300,
-    });
-    await prisma.room.update({
-      where: { id: r.id },
-      data: { maxParticipants: limit },
-    });
-    return { success: true };
+      participantCount: connected.length,
+    };
   });
   app.get("/api/room/:code/names", async (req) => {
     const { r } = await member(req, req.params.code),
@@ -755,8 +913,17 @@ export async function buildApp({
     60000,
   );
   timer.unref();
+  const restartTimer = setInterval(
+    () =>
+      reopenDueRooms().catch(() => app.log.error("Public room restart failed")),
+    1000,
+  );
+  restartTimer.unref();
   app.addHook("onClose", async () => {
+    shuttingDown = true;
     clearInterval(timer);
+    clearInterval(restartTimer);
+    await Promise.allSettled([...restarting.values()]);
     await prisma.$disconnect();
   });
   await prisma.$connect();
@@ -788,8 +955,9 @@ export async function buildApp({
         encrypted: false,
         maxParticipants: maximum,
       },
-      update: { encrypted: false, maxParticipants: maximum },
+      update: { encrypted: false },
     });
+  await reopenDueRooms();
   return app;
 }
 if (

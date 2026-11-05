@@ -1773,3 +1773,661 @@ button:active:not(:disabled) {
     column-gap: 16px;
   }
 }
+/* Release surfaces follow the same phone-first operating interface. */
+.lobby-nav {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.lobby-nav-icon {
+  display: grid;
+  place-items: center;
+  min-width: 44px;
+  min-height: 44px;
+  border-radius: 10px;
+  color: var(--muted);
+}
+.lobby-nav-icon:hover {
+  background: var(--hover);
+  text-decoration: none;
+  color: var(--text);
+}
+.owner-nav-link {
+  color: #dcbf8d;
+}
+.download-home-link {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  min-height: 44px;
+  margin-top: 12px;
+  font-size: 14px;
+}
+.public-restart {
+  display: block;
+  margin-top: 6px;
+  font-size: 12px;
+  color: #c4b497;
+  font-weight: 400;
+}
+.room-dot-restarting {
+  background: #bba16e;
+}
+.room-card:disabled {
+  opacity: 0.75;
+  cursor: default;
+}
+.room-card:disabled .room-count {
+  font-size: 12px;
+}
+.selected-room-restart {
+  font-size: 15px;
+  color: #dfc393;
+  margin: 18px 0 !important;
+}
+.room-card .room-count {
+  white-space: nowrap;
+  font-size: 13px;
+}
+.owner-avatar {
+  position: relative;
+  border: 2px solid #e0c08b;
+  outline: 1px solid #9c815a;
+  outline-offset: 5px;
+  background: #5a5a72;
+}
+.owner-avatar.is-speaking {
+  outline: 3px solid var(--green);
+  outline-offset: 7px;
+}
+.owner-avatar-crown {
+  position: absolute;
+  right: -4px;
+  top: -5px;
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  background: #3c3429;
+  border: 1px solid #d4b37f;
+  color: #ffe2aa;
+  display: grid;
+  place-items: center;
+}
+.owner-person .person-tile > p,
+.owner-person > p {
+  color: #d8c19d;
+}
+.person-avatar.owner-avatar .owner-avatar-crown svg {
+  width: 14px;
+  height: 14px;
+}
+.member-list .owner-avatar-crown,
+.participants .owner-avatar-crown {
+  width: 18px;
+  height: 18px;
+  right: -4px;
+  top: -5px;
+}
+.member-list .owner-avatar-crown svg,
+.participants .owner-avatar-crown svg {
+  width: 10px;
+  height: 10px;
+}
+.participants .person-avatar {
+  width: 40px;
+  height: 40px;
+  font-size: 15px;
+  letter-spacing: 0;
+  animation: none;
+  outline-offset: 2px;
+}
+.participants .person-avatar.is-speaking {
+  outline-width: 1px;
+}
+.participants .owner-avatar {
+  outline-width: 1px;
+}
+.download-page,
+.manage-page {
+  padding: 0 28px 24px;
+  min-height: 100dvh;
+}
+.download-page > .lobby-topbar,
+.manage-page > .lobby-topbar {
+  max-width: 1100px;
+  margin: auto;
+}
+.download-content {
+  max-width: 740px;
+  margin: 48px auto 60px;
+}
+.download-heading {
+  text-align: center;
+  margin-bottom: 36px;
+}
+.download-symbol {
+  display: grid;
+  place-items: center;
+  width: 70px;
+  height: 70px;
+  border-radius: 50%;
+  background: #28455d;
+  color: #a3d9ff;
+  margin: 0 auto 24px;
+}
+.download-heading h1,
+.manage-heading h1 {
+  font-size: 30px;
+  letter-spacing: -0.7px;
+  font-weight: 630;
+  line-height: 1.2;
+}
+.download-heading > p,
+.manage-heading > p {
+  font-size: 16px;
+  color: var(--muted);
+  margin-top: 14px;
+}
+.download-options {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 20px;
+  margin-bottom: 46px;
+}
+.download-option {
+  padding: 25px;
+  background: var(--surface);
+  border-radius: 14px;
+  display: flex;
+  flex-direction: column;
+}
+.download-option-title {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+.download-option-title h2 {
+  font-size: 21px;
+  font-weight: 600;
+}
+.download-option-title > span {
+  font-size: 12px;
+  color: var(--muted);
+  white-space: nowrap;
+}
+.download-option > p {
+  font-size: 14px;
+  color: var(--muted);
+  margin: 12px 0 23px;
+  flex: 1;
+}
+.download-action {
+  gap: 10px;
+  min-height: 48px;
+  font-size: 15px;
+}
+.download-action:hover {
+  text-decoration: none;
+}
+.download-unavailable {
+  background: #333a43;
+  color: #c0c6ce;
+  font-size: 14px;
+}
+.install-guide {
+  margin-top: 36px;
+}
+.install-guide h2 {
+  font-size: 21px;
+  font-weight: 600;
+  margin-bottom: 16px;
+}
+.install-guide > p,
+.install-guide li {
+  font-size: 16px;
+  color: #c9ced6;
+  line-height: 1.7;
+}
+.install-guide ol {
+  margin: 14px 0;
+  padding-left: 23px;
+}
+.install-guide li {
+  padding-left: 5px;
+  margin-bottom: 14px;
+}
+.install-guide a > svg {
+  display: inline;
+  vertical-align: middle;
+}
+.installation-note {
+  display: flex;
+  align-items: flex-start;
+  gap: 11px;
+  background: #252c32;
+  padding: 18px;
+  border-radius: 12px;
+  margin: 24px 0 14px;
+}
+.installation-note svg {
+  margin-top: 3px;
+  color: var(--green);
+}
+.installation-note p {
+  font-size: 14px;
+  color: #cdd6df;
+  line-height: 1.65;
+}
+.installation-source {
+  font-size: 13px !important;
+  color: var(--muted) !important;
+}
+.download-browser-link {
+  margin-top: 36px;
+  min-height: 44px;
+  font-size: 15px;
+}
+.manage-content {
+  max-width: 880px;
+  margin: 40px auto;
+}
+.manage-heading {
+  margin-bottom: 28px;
+}
+.manage-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin: 25px 0;
+}
+.room-filter {
+  display: flex;
+  gap: 6px;
+  border-radius: 10px;
+  background: #252a30;
+  padding: 4px;
+}
+.room-filter button {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 11px 15px;
+  min-height: 44px;
+  font-size: 14px;
+  border: 0;
+  background: none;
+  border-radius: 7px;
+  color: var(--muted);
+}
+.room-filter button[aria-pressed="true"] {
+  background: #39424d;
+  color: #f4f6f8;
+}
+.managed-room-list {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+.managed-room {
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  padding: 24px;
+}
+.managed-room > header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 15px;
+  margin-bottom: 22px;
+}
+.managed-room h2 {
+  font-size: 20px;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+.managed-room-state {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  color: var(--muted);
+  font-size: 13px;
+  margin-top: 8px;
+}
+.managed-room-state.restarting {
+  color: #cfb784;
+}
+.managed-room-count {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 40px;
+  font-size: 14px;
+  color: #bdc7d1;
+  padding-top: 4px;
+}
+.room-limit-form > label {
+  display: block;
+  font-size: 14px;
+  color: #c5ccd5;
+  margin-bottom: 10px;
+}
+.room-limit-input {
+  display: flex;
+  gap: 10px;
+}
+.room-limit-input input {
+  width: 96px;
+  font-size: 16px;
+  padding: 12px 13px;
+  min-height: 46px;
+}
+.room-limit-input button {
+  border: 0;
+  background: #32475a;
+  color: #c5e4ff;
+  border-radius: 9px;
+  padding: 12px 18px;
+  min-height: 46px;
+  font-size: 14px;
+  font-weight: 500;
+}
+.room-limit-form > .management-note {
+  font-size: 12px;
+  max-width: 580px;
+  line-height: 1.6;
+  margin-top: 12px;
+}
+.managed-room-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  border-top: 1px solid var(--line);
+  padding-top: 16px;
+  margin-top: 22px;
+}
+.managed-room-actions > button {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  border: 0;
+  background: none;
+  min-height: 44px;
+  font-size: 14px;
+  padding: 8px 0;
+  color: var(--blue);
+}
+.managed-room-actions > button.danger {
+  color: #e99fa7 !important;
+}
+.managed-private-invite {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding-top: 18px;
+  border-top: 1px solid var(--line);
+  margin-top: 12px;
+}
+.managed-private-invite label {
+  font-size: 14px;
+  color: #c6ced8;
+}
+.managed-private-invite .management-note {
+  margin-top: 0;
+}
+.managed-private-invite input {
+  font-size: 16px;
+}
+.close-room-confirm {
+  padding: 16px;
+  background: #34292e;
+  border-radius: 10px;
+  margin-top: 16px;
+}
+.close-room-confirm p {
+  font-size: 14px;
+  line-height: 1.65;
+  color: #efd4d9;
+}
+.close-room-confirm > div {
+  display: flex;
+  gap: 12px;
+  margin-top: 14px;
+  flex-wrap: wrap;
+}
+.close-room-confirm button {
+  background: #48333b;
+  border: 0;
+  border-radius: 8px;
+  padding: 10px 14px;
+  min-height: 44px;
+  font-size: 14px;
+}
+.close-room-confirm button:last-child {
+  background: #3a3a41;
+  color: #e0e3e7;
+}
+.call-limit-form {
+  margin-bottom: 24px;
+}
+.call-limit-form .room-limit-input input {
+  width: 80px;
+}
+.call-management .room-limit-input button {
+  min-height: 46px;
+  background: #32475a;
+  color: #c5e4ff;
+}
+.manage-denied {
+  max-width: 420px;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 18px;
+  padding-top: 22px;
+}
+.manage-denied > svg {
+  color: var(--muted);
+}
+.manage-denied h2 {
+  font-size: 23px;
+}
+.manage-denied p {
+  color: var(--muted);
+}
+.manage-denied .btn {
+  margin-top: 8px;
+}
+.manage-empty {
+  font-size: 16px;
+  color: var(--muted);
+  padding: 24px 0;
+}
+.inline-error {
+  color: #ffbec4;
+  background: #492c32;
+  border-radius: 10px;
+  padding: 13px 16px;
+  font-size: 14px;
+  line-height: 1.6;
+  margin: 12px 0;
+}
+.inline-success {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  color: #bcdec9;
+  background: #263c31;
+  border-radius: 10px;
+  padding: 13px 16px;
+  font-size: 14px;
+  line-height: 1.6;
+  margin: 12px 0;
+}
+.inline-success svg {
+  flex-shrink: 0;
+}
+@media (max-width: 740px) {
+  .lobby-nav {
+    gap: 3px;
+  }
+  .lobby-nav .telegram-link {
+    display: none;
+  }
+  .lobby-nav-icon {
+    width: 44px;
+    height: 44px;
+  }
+  .download-home-link {
+    font-size: 14px;
+    gap: 6px;
+    flex-wrap: wrap;
+    text-align: center;
+    line-height: 1.5;
+  }
+  .download-page,
+  .manage-page {
+    padding: 0 20px 24px;
+  }
+  .download-content {
+    margin-top: 32px;
+  }
+  .download-heading h1,
+  .manage-heading h1 {
+    font-size: 28px;
+    letter-spacing: -0.6px;
+  }
+  .download-heading > p,
+  .manage-heading > p {
+    font-size: 16px;
+    line-height: 1.65;
+  }
+  .download-options {
+    grid-template-columns: 1fr;
+    gap: 14px;
+    margin-bottom: 36px;
+  }
+  .download-option {
+    padding: 22px;
+  }
+  .download-option > p {
+    font-size: 15px;
+    margin-bottom: 20px;
+  }
+  .download-option-title h2 {
+    font-size: 21px;
+  }
+  .install-guide {
+    margin-top: 32px;
+  }
+  .install-guide h2 {
+    font-size: 21px;
+  }
+  .install-guide li {
+    font-size: 16px;
+    line-height: 1.7;
+    margin-bottom: 18px;
+  }
+  .installation-note {
+    padding: 16px;
+  }
+  .installation-note p {
+    font-size: 14px;
+  }
+  .installation-source {
+    font-size: 13px !important;
+    line-height: 1.7 !important;
+  }
+  .manage-content {
+    margin-top: 28px;
+  }
+  .manage-toolbar {
+    gap: 8px;
+  }
+  .room-filter button {
+    padding: 10px 12px;
+    font-size: 13px;
+    gap: 6px;
+  }
+  .managed-room {
+    padding: 20px 17px;
+  }
+  .managed-room h2 {
+    font-size: 19px;
+  }
+  .managed-room-actions > button {
+    font-size: 13px;
+  }
+  .room-limit-form > label {
+    font-size: 15px;
+  }
+  .room-limit-input button {
+    font-size: 14px;
+  }
+  .close-room-confirm p {
+    font-size: 14px;
+  }
+  .public-restart {
+    font-size: 13px;
+  }
+  .room-card .room-count {
+    font-size: 13px;
+  }
+  .call-management .close-room-confirm button {
+    font-size: 14px;
+    padding: 11px 12px;
+  }
+  .owner-avatar-crown {
+    width: 24px;
+    height: 24px;
+  }
+}
+@media (max-width: 360px) {
+  .room-filter button {
+    padding: 10px;
+    font-size: 12px;
+  }
+  .managed-room {
+    padding: 17px 14px;
+  }
+  .managed-room-actions {
+    gap: 8px;
+  }
+  .managed-room-actions > button {
+    font-size: 12px;
+  }
+  .download-page,
+  .manage-page {
+    padding-inline: 16px;
+  }
+}
+.install-guide {
+  max-width: 66ch;
+}
+.room-limit-form > .management-note {
+  font-size: 13px;
+}
+.manage-signout {
+  min-height: 44px;
+  margin-top: 8px;
+  font-size: 14px;
+}
+.room-limit-form input:invalid {
+  box-shadow: none;
+}
+.manage-page .inline-error {
+  margin-top: 16px;
+}
+@media (max-width: 740px) {
+  .room-limit-form > .management-note,
+  .call-limit-form > .management-note {
+    font-size: 14px;
+    line-height: 1.65;
+  }
+  .managed-room-state {
+    font-size: 14px;
+  }
+}

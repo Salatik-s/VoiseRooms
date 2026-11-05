@@ -37,6 +37,7 @@ model Room {
   maxParticipants Int       @default(20) // лимит участников
   createdAt       DateTime  @default(now())
   expiresAt       DateTime? // когда удалить временную комнату
+  reopensAt       DateTime? // запланированный перезапуск публичной комнаты
 
   owner           User?     @relation(fields: [ownerTgId], references: [tgId])
   connections     Connection[]
@@ -45,6 +46,8 @@ model Room {
   encrypted       Boolean @default(true)
   accessHash      String?
   bans            RoomBan[]
+
+  @@index([isPersistent, isActive, reopensAt])
 }
 
 model RoomBan {
@@ -73,6 +76,7 @@ model Connection {
 model RoomParticipantName {
   microphoneBlocked Boolean @default(false)
   allowedWhileLocked Boolean @default(false)
+  overLimitAllowed Boolean @default(false)
   id            Int       @id @default(autoincrement())
   roomId        Int
   identity      String    // HMAC-псевдоним участника внутри комнаты

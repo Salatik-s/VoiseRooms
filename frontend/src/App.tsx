@@ -7,13 +7,15 @@ import {
 } from "livekit-client";
 import { RoomContext } from "@livekit/components-react";
 import { api, tg, keyFor, enc, invite, admissionProof, digest } from "./client";
-import type { Info, Token } from "./client";
+import type { Info, Token, Viewer } from "./client";
 import { friendlyError, readResponse, offlineMessage } from "./errors";
+import { nativeCallState } from "./client";
+import { RestartCountdown } from "./RestartCountdown";
 import { Icons } from "./Icons";
 import { LegalPage, LegalLinks } from "./Legal";
 import "./styles.css";
 import "./repairs.css";
-import { AudioLines, ArrowUpRight } from "lucide-react";
+import { AudioLines, ArrowUpRight, Smartphone, Crown } from "lucide-react";
 const CallPreview = import.meta.env.DEV
   ? lazy(() => import("./CallPreview"))
   : null;
@@ -21,6 +23,8 @@ const isPreview =
   import.meta.env.DEV &&
   new URLSearchParams(location.search).get("preview") === "call";
 const Call = lazy(() => import("./Call"));
+const Downloads = lazy(() => import("./Downloads"));
+const ManageRooms = lazy(() => import("./ManageRooms"));
 export default function App() {
   const [code, setCode] = useState(
       new URLSearchParams(location.search).get("room") || "",
@@ -35,7 +39,9 @@ export default function App() {
     [status, setStatus] = useState(""),
     [screen, setScreen] = useState("main"),
     [lang, setLang] = useState<"ru" | "en">("ru"),
-    [joinWithMic, setJoinWithMic] = useState(true);
+    [joinWithMic, setJoinWithMic] = useState(true),
+    [viewer, setViewer] = useState<Viewer | null>(null),
+    [viewerLoading, setViewerLoading] = useState(true);
   useEffect(() => {
     const offline = () => setError(offlineMessage);
     const online = () =>
@@ -50,16 +56,50 @@ export default function App() {
   const en = lang === "en";
   const resource = useRef<{ room: Room; worker?: Worker } | null>(null);
   useEffect(() => {
-    if (isPreview) return;
+    if (
+      isPreview ||
+      ["/download", "/privacy", "/terms"].includes(location.pathname)
+    ) {
+      setViewerLoading(false);
+      return;
+    }
     tg?.ready();
     tg?.expand();
-    fetch("/api/rooms/public")
-      .then(readResponse)
-      .then((d) => setRooms(d.rooms || []))
-      .catch((e) => setError(friendlyError(e)));
+    let active = true;
+    const loadRooms = () =>
+      fetch("/api/rooms/public")
+        .then(readResponse)
+        .then((d) => {
+          if (active) setRooms(d.rooms || []);
+        });
+    void loadRooms().catch((e) => {
+      if (active) setError(friendlyError(e));
+    });
+    const timer = setInterval(() => {
+      void loadRooms().catch(() => {});
+    }, 10000);
+    void api("/me")
+      .then((d) => {
+        if (active) setViewer(d);
+      })
+      .catch(() => {})
+      .finally(() => {
+        if (active) setViewerLoading(false);
+      });
+    const nativeEnd = () => {
+      nativeCallState(false, false);
+      void resource.current?.room.disconnect();
+    };
+    window.addEventListener("voicerooms-native-end", nativeEnd);
+    window.addEventListener("pagehide", nativeEnd);
     return () => {
+      active = false;
+      clearInterval(timer);
+      window.removeEventListener("voicerooms-native-end", nativeEnd);
+      window.removeEventListener("pagehide", nativeEnd);
       resource.current?.room.disconnect();
       resource.current?.worker?.terminate();
+      nativeCallState(false, false);
     };
   }, []);
   useEffect(() => {
@@ -77,6 +117,22 @@ export default function App() {
       })
       .catch((e) => setError(friendlyError(e)));
   }, [code]);
+  useEffect(() => {
+    if (!code || info?.isActive !== false || !info?.isPersistent) return;
+    let active = true;
+    const timer = setInterval(() => {
+      fetch("/api/room/" + encodeURIComponent(code))
+        .then(readResponse)
+        .then((d) => {
+          if (active) setInfo(d);
+        })
+        .catch(() => {});
+    }, 5000);
+    return () => {
+      active = false;
+      clearInterval(timer);
+    };
+  }, [code, info?.isActive, info?.isPersistent]);
   async function run(fn: () => Promise<void>) {
     setError("");
     setBusy(true);
@@ -131,7 +187,12 @@ export default function App() {
     });
     resource.current = { room, worker };
     room.on(RoomEvent.Disconnected, () => {
+      nativeCallState(false, false);
       setCall(null);
+      fetch("/api/room/" + encodeURIComponent(code))
+        .then(readResponse)
+        .then(setInfo)
+        .catch(() => {});
       setStatus(
         "Соединение завершено. Можно войти повторно, если комната открыта.",
       );
@@ -152,15 +213,18 @@ export default function App() {
       await room.startAudio();
       setToken(d);
       setCall(room);
+      nativeCallState(true, false);
       setStatus("");
       try {
         if (joinWithMic && !d.microphoneBlocked)
           await room.localParticipant.setMicrophoneEnabled(true);
+        nativeCallState(true, room.localParticipant.isMicrophoneEnabled);
       } catch (e) {
         setError(friendlyError(e, "microphone"));
       }
     } catch (e) {
       await room.disconnect();
+      nativeCallState(false, false);
       worker?.terminate();
       throw Error(friendlyError(e, "connect"));
     }
@@ -180,6 +244,28 @@ export default function App() {
     return (
       <Suspense fallback={<p className="preview-loading">Открываем пример…</p>}>
         <CallPreview />
+      </Suspense>
+    );
+  if (location.pathname === "/download")
+    return (
+      <Suspense
+        fallback={<p className="preview-loading">Открываем приложения…</p>}
+      >
+        <Downloads />
+      </Suspense>
+    );
+  if (location.pathname === "/manage")
+    return (
+      <Suspense
+        fallback={<p className="preview-loading">Открываем управление…</p>}
+      >
+        <ManageRooms
+          viewer={viewer}
+          loading={viewerLoading}
+          onSelect={(c, key = "") => {
+            location.assign(invite(c, key));
+          }}
+        />
       </Suspense>
     );
   if (["/privacy", "/terms"].includes(location.pathname)) return <LegalPage />;
@@ -213,14 +299,32 @@ export default function App() {
               <AudioLines size={23} />
               VoiceRooms
             </a>
-            <a
-              href="https://t.me/vidagram_bot"
-              target="_blank"
-              rel="noreferrer"
-              className="telegram-link"
-            >
-              Открыть в Telegram <ArrowUpRight size={17} />
-            </a>
+            <nav className="lobby-nav" aria-label="Сервис">
+              <a
+                href="/download"
+                className="lobby-nav-icon"
+                aria-label="Приложения для телефона"
+              >
+                <Smartphone size={20} />
+              </a>
+              {viewer?.isServiceOwner && (
+                <a
+                  href="/manage"
+                  className="lobby-nav-icon owner-nav-link"
+                  aria-label="Управление комнатами"
+                >
+                  <Crown size={20} />
+                </a>
+              )}
+              <a
+                href="https://t.me/vidagram_bot"
+                target="_blank"
+                rel="noreferrer"
+                className="telegram-link"
+              >
+                Открыть в Telegram <ArrowUpRight size={17} />
+              </a>
+            </nav>
           </header>
           {screen === "main" ? (
             <>
@@ -302,12 +406,23 @@ export default function App() {
                       className="room-card"
                       key={r.code}
                       onClick={() => select(r.code)}
-                      disabled={busy}
+                      disabled={busy || r.isActive === false}
                     >
-                      <span className="room-dot" />
-                      <span className="room-name">{r.name}</span>
+                      <span
+                        className={`room-dot ${r.isActive === false ? "room-dot-restarting" : ""}`}
+                      />
+                      <span className="room-name">
+                        {r.name}
+                        {r.isActive === false && (
+                          <small className="public-restart">
+                            <RestartCountdown until={r.reopensAt} />
+                          </small>
+                        )}
+                      </span>
                       <span className="room-count">
-                        {r.participantCount || 0}
+                        {r.isActive === false
+                          ? "Перезапуск"
+                          : `${r.participantCount || 0} / ${r.maxParticipants || 8}`}
                       </span>
                       <span className="room-arrow">→</span>
                     </button>
@@ -404,6 +519,11 @@ export default function App() {
                             ? "Allow microphone access after joining, or listen without it."
                             : "После входа разрешите микрофон или слушайте без него."}
                         </p>
+                        {info.isActive === false && (
+                          <p className="selected-room-restart" role="status">
+                            <RestartCountdown until={info.reopensAt} />
+                          </p>
+                        )}
                         <label className="prejoin-mic">
                           <input
                             type="checkbox"
@@ -418,7 +538,7 @@ export default function App() {
                         </label>
                         <button
                           className="btn btn-primary"
-                          disabled={busy}
+                          disabled={busy || info.isActive === false}
                           onClick={() => run(join)}
                         >
                           {busy
@@ -478,6 +598,11 @@ export default function App() {
               Посмотреть пример звонка <ArrowUpRight size={16} />
             </a>
           )}
+          <a className="download-home-link" href="/download">
+            <Smartphone size={17} />
+            Приложения для Android и iPhone
+            <ArrowUpRight size={15} />
+          </a>
           <LegalLinks />
         </div>
       )}

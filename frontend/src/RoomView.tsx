@@ -1,5 +1,6 @@
 import { useEffect, useState, type ReactNode } from "react";
 import {
+  Crown,
   AudioLines,
   Check,
   MessageCircle,
@@ -19,6 +20,7 @@ export type Person = {
   speaking?: boolean;
   muted?: boolean;
   role?: string;
+  owner?: boolean;
 };
 export function Avatar({ person }: { person: Person }) {
   const index =
@@ -29,7 +31,7 @@ export function Avatar({ person }: { person: Person }) {
     5;
   return (
     <span
-      className={`person-avatar tone-${index % 5} ${person.speaking ? "is-speaking" : ""}`}
+      className={`person-avatar tone-${index % 5} ${person.speaking ? "is-speaking" : ""} ${person.owner ? "owner-avatar" : ""}`}
       aria-hidden="true"
     >
       {person.name
@@ -37,6 +39,11 @@ export function Avatar({ person }: { person: Person }) {
         .slice(0, 2)
         .map((n) => Array.from(n)[0])
         .join("")}
+      {person.owner && (
+        <span className="owner-avatar-crown">
+          <Crown size={14} />
+        </span>
+      )}
     </span>
   );
 }
@@ -123,7 +130,7 @@ export function RoomView({
             <div className={`people-stage count-${people.length}`}>
               {people.map((p) => (
                 <article
-                  className={`person-tile ${p.speaking ? "speaking" : ""}`}
+                  className={`person-tile ${p.speaking ? "speaking" : ""} ${p.owner ? "owner-person" : ""}`}
                   key={p.id}
                 >
                   <div className="avatar-wrap">
@@ -144,7 +151,9 @@ export function RoomView({
                   </h2>
                   <p className={p.speaking ? "speaking-label" : ""}>
                     {p.speaking
-                      ? "Говорит"
+                      ? p.owner
+                        ? "Владелец сервиса · говорит"
+                        : "Говорит"
                       : p.role ||
                         (p.muted ? "Микрофон выключен" : "В разговоре")}
                   </p>

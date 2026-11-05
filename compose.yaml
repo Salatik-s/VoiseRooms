@@ -62,6 +62,7 @@ services:
       LIVEKIT_PUBLIC_URL: wss://${DOMAIN:?Set domain}/livekit/
       APP_ORIGIN: https://${DOMAIN}
       MAX_ROOM_PARTICIPANTS: ${MAX_ROOM_PARTICIPANTS:-8}
+      MAX_OWNER_ROOM_PARTICIPANTS: ${MAX_OWNER_ROOM_PARTICIPANTS:-100}
       MAX_ACTIVE_ROOMS: 20
       UPLOADS_DIR: /app/uploads
     volumes: [uploads:/app/uploads]

@@ -1,6 +1,11 @@
 import { readResponse } from "./errors.ts";
 declare global {
   interface Window {
+    VoiceRoomsNative?: {
+      callState: (active: boolean, microphone: boolean) => void;
+      saveSession?: (token: string) => void;
+      saveFile?: (name: string, base64: string, mime: string) => void;
+    };
     Telegram?: {
       WebApp?: { initData?: string; ready: () => void; expand: () => void };
     };
@@ -25,6 +30,11 @@ export async function headers(): Promise<Record<string, string>> {
     const r = await fetch("/api/session");
     session = (await readResponse(r)).token;
     sessionStorage.setItem("vr-session", session);
+    try {
+      window.VoiceRoomsNative?.saveSession?.(session);
+    } catch {
+      /* Native persistence is optional in the browser. */
+    }
   }
   return { Authorization: "Bearer " + session };
 }
@@ -64,12 +74,18 @@ export type Info = {
   name: string;
   encrypted: boolean;
   participantCount?: number;
+  isPersistent?: boolean;
+  isActive?: boolean;
+  isLocked?: boolean;
+  maxParticipants?: number;
+  reopensAt?: string | null;
 };
 export type Token = {
   token: string;
   livekitUrl: string;
   room: string;
   isAdmin: boolean;
+  isServiceOwner?: boolean;
   microphoneBlocked?: boolean;
   identity: string;
   encrypted: boolean;
@@ -81,3 +97,24 @@ export type Message = {
   file?: { id: number; name: string; iv: string };
   self?: boolean;
 };
+
+export function nativeCallState(active: boolean, microphone: boolean) {
+  try {
+    window.VoiceRoomsNative?.callState(active, microphone);
+  } catch {
+    /* Native lifecycle support must not interrupt a conversation. */
+  }
+}
+export type Viewer = {
+  isServiceOwner: boolean;
+  isAnonymous: boolean;
+  maxParticipantsLimit?: number;
+};
+
+export function clearSession() {
+  session = "";
+  sessionStorage.removeItem("vr-session");
+  try {
+    window.VoiceRoomsNative?.saveSession?.("");
+  } catch {}
+}

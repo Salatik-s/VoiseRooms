@@ -3,6 +3,9 @@ import { Send, ArrowLeft } from "lucide-react";
 import { MemberActions, RoomControls, type BanEntry } from "./RoomManagement";
 import { RoomView, Avatar, type Person } from "./RoomView";
 export default function CallPreview() {
+  const ownerPreview =
+    new URLSearchParams(location.search).get("owner") === "1";
+  const [capacity, setCapacity] = useState(8);
   const [mic, setMic] = useState(true),
     [panel, setPanel] = useState<"chat" | "people" | null>(() =>
       window.matchMedia("(min-width: 741px)").matches ? "chat" : null,
@@ -30,7 +33,8 @@ export default function CallPreview() {
       name: "Андрей",
       local: true,
       muted: !mic,
-      role: "Создатель комнаты",
+      role: ownerPreview ? "Владелец сервиса" : "Создатель комнаты",
+      owner: ownerPreview,
     },
     { id: "3", name: "Макар", muted: true },
     { id: "4", name: "Вероника", muted: true },
@@ -128,6 +132,9 @@ export default function CallPreview() {
           <RoomControls
             state={{
               isLocked: locked,
+              maxParticipants: capacity,
+              maxAllowedParticipants: 100,
+              isPersistent: false,
               bans,
               members: people.map((p) => ({
                 identity: p.id,
@@ -146,10 +153,11 @@ export default function CallPreview() {
               setBans(bans.filter((b) => b.identity !== id));
               notify("Вход участника снова разрешён");
             }}
-            onClose={() => {
-              if (confirm("Завершить пример разговора для всех?"))
-                setClosed(true);
+            onCapacity={(n) => {
+              setCapacity(n);
+              notify("Количество мест сохранено в примере");
             }}
+            onClose={() => setClosed(true)}
           />
           <button
             className="text-link reset-preview"
@@ -158,6 +166,7 @@ export default function CallPreview() {
               setBans([]);
               setBlocked([]);
               setLocked(false);
+              setCapacity(8);
               setNotice("");
             }}
           >

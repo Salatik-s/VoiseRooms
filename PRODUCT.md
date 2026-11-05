@@ -29,3 +29,7 @@ Participants first. Keep call controls visible. Distinguish private and public p
 ## Primary usage
 
 The owner specifies 80% phone users and 20% desktop users. Phone convenience is the primary design criterion. Validate thumb reach, touch targets, short viewport states and chat input before desktop refinements.
+
+## Release workflows
+
+The owner requested ordinary-user APK and unsigned IPA downloads, computer-based IPA signing instructions, verified owner room management, a visible owner frame, adjustable capacities, and public-room reopening five minutes after closure. Ownership is validated by the API, never by client display flags. Private-room admission still requires its invitation key.

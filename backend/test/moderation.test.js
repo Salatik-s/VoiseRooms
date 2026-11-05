@@ -7,7 +7,8 @@ import { join } from "node:path";
 import { AccessToken, TokenVerifier, TrackSource } from "livekit-server-sdk";
 import { buildApp } from "../src/index.js";
 import { issueSession, participantId } from "../src/security.js";
-async function fixture(t) {
+async function fixture(t, options = {}) {
+  let now = options.now || Date.now();
   const secret = "test-management-secret-".repeat(4),
     env = {
       INTERNAL_KEY: secret,
@@ -15,7 +16,7 @@ async function fixture(t) {
       LIVEKIT_API_KEY: "testkey",
       LIVEKIT_API_SECRET: "test-media-secret-".repeat(4),
       DOMAIN: "localhost",
-      PERSISTENT_ROOMS: "|",
+      PERSISTENT_ROOMS: options.persistentNames || "|",
       UPLOADS_DIR: await mkdtemp(join(tmpdir(), "vr-moderation-")),
     };
   const room = {
@@ -28,6 +29,7 @@ async function fixture(t) {
       encrypted: false,
       isLocked: false,
       maxParticipants: 8,
+      reopensAt: null,
     },
     rooms = [room, { ...room, id: 2, code: "OTHERROOM", ownerTgId: -4n }],
     members = [],
@@ -35,6 +37,16 @@ async function fixture(t) {
     live = new Map(),
     removed = [],
     mutes = [];
+  if (options.persistent) {
+    room.isPersistent = true;
+    room.ownerTgId = null;
+  }
+  const mediaRooms = new Map(
+    rooms.map((r) => [
+      r.code,
+      { name: r.code, maxParticipants: options.legacyHardcap || 100 },
+    ]),
+  );
   const identity = (id, code = "TESTROOM") => participantId(code, id, secret);
   for (const id of [-1, -2, -3, 900])
     members.push({
@@ -43,20 +55,34 @@ async function fixture(t) {
       displayName: "Member " + id,
       microphoneBlocked: false,
       allowedWhileLocked: false,
+      overLimitAllowed: false,
     });
   members.push({
     roomId: 2,
     identity: identity(-4, "OTHERROOM"),
     displayName: "Other",
   });
+  const compare = (value) => (value instanceof Date ? value.getTime() : value);
   const match = (o, w = {}) =>
-    Object.entries(w).every(([k, v]) =>
-      v && typeof v === "object"
-        ? v.in
-          ? v.in.includes(o[k])
-          : true
-        : o[k] === v,
-    );
+    Object.entries(w).every(([k, v]) => {
+      if (k === "OR") return v.some((part) => match(o, part));
+      if (k === "AND") return v.every((part) => match(o, part));
+      if (v && typeof v === "object" && !(v instanceof Date)) {
+        if (v.in) return v.in.includes(o[k]);
+        if ("not" in v) return o[k] !== v.not;
+        if (o[k] == null) return false;
+        return Object.entries(v).every(
+          ([operator, expected]) =>
+            ({
+              lt: compare(o[k]) < compare(expected),
+              lte: compare(o[k]) <= compare(expected),
+              gt: compare(o[k]) > compare(expected),
+              gte: compare(o[k]) >= compare(expected),
+            })[operator] ?? true,
+        );
+      }
+      return compare(o[k]) === compare(v);
+    });
   const find = (a, w) => a.find((x) => match(x, w));
   const db = {
     $connect: async () => {},
@@ -79,6 +105,21 @@ async function fixture(t) {
       },
       update: async ({ where, data }) =>
         Object.assign(find(rooms, where), data),
+      upsert: async ({ where, create, update }) => {
+        let record = find(rooms, where);
+        if (record) Object.assign(record, update);
+        else {
+          record = {
+            id: rooms.length + 1,
+            isActive: true,
+            isLocked: false,
+            reopensAt: null,
+            ...create,
+          };
+          rooms.push(record);
+        }
+        return record;
+      },
     },
     roomParticipantName: {
       findUnique: async ({ where: { roomId_identity: w } }) => find(members, w),
@@ -116,8 +157,20 @@ async function fixture(t) {
     },
   };
   const media = {
-    createRoom: async () => ({}),
+    createRoom: async (data) => {
+      if (!mediaRooms.has(data.name)) mediaRooms.set(data.name, { ...data });
+      return mediaRooms.get(data.name);
+    },
+    listRooms: async (codes) =>
+      [...mediaRooms.values()]
+        .filter((r) => !codes?.length || codes.includes(r.name))
+        .map((r) => ({
+          ...r,
+          numParticipants: [...live.values()].filter((p) => p.room === r.name)
+            .length,
+        })),
     deleteRoom: async (code) => {
+      mediaRooms.delete(code);
       for (const [id, p] of live) if (p.room === code) live.delete(id);
     },
     listParticipants: async (code) =>
@@ -136,7 +189,7 @@ async function fixture(t) {
       Object.assign(live.get(id), data),
     mutePublishedTrack: async (code, id, sid, muted) => mutes.push(muted),
   };
-  const app = await buildApp({ env, prisma: db, media });
+  let app = await buildApp({ env, prisma: db, media, clock: () => now });
   await app.ready();
   t.after(async () => {
     await app.close();
@@ -153,11 +206,11 @@ async function fixture(t) {
     });
     return { status: r.statusCode, ...r.json() };
   };
-  const connect = (id) => {
-    live.set(identity(id), {
-      identity: identity(id),
+  const connect = (id, code = "TESTROOM") => {
+    live.set(identity(id, code), {
+      identity: identity(id, code),
       name: "Member " + id,
-      room: "TESTROOM",
+      room: code,
       permission: {
         canPublish: true,
         canPublishSources: [TrackSource.MICROPHONE, TrackSource.SCREEN_SHARE],
@@ -165,11 +218,15 @@ async function fixture(t) {
       tracks: [{ sid: "mic", source: TrackSource.MICROPHONE }],
     });
   };
-  const webhook = async (id) => {
+  const webhook = async (
+    id,
+    code = "TESTROOM",
+    event = "participant_joined",
+  ) => {
     const body = JSON.stringify({
-        event: "participant_joined",
-        room: { name: "TESTROOM" },
-        participant: { identity: identity(id) },
+        event,
+        room: { name: code },
+        participant: { identity: identity(id, code) },
       }),
       at = new AccessToken(env.LIVEKIT_API_KEY, env.LIVEKIT_API_SECRET);
     at.sha256 = createHash("sha256").update(body).digest("base64");
@@ -198,6 +255,19 @@ async function fixture(t) {
     live,
     bans,
     mutes,
+    rooms,
+    members,
+    mediaRooms,
+    env,
+    now: () => now,
+    advance: (ms) => {
+      now += ms;
+    },
+    restart: async () => {
+      await app.close();
+      app = await buildApp({ env, prisma: db, media, clock: () => now });
+      await app.ready();
+    },
   };
 }
 test("creator rights are assigned server-side and scoped to one room", async (t) => {
@@ -414,4 +484,232 @@ test("framework errors are translated without exposing implementation details", 
   assert.equal(last.status, 429);
   assert.match(last.error, /Подождите минуту/);
   assert.doesNotMatch(last.error, /Rate limit/);
+});
+
+test("service-owner identity comes from verified credentials and never bypasses a private key", async (t) => {
+  const f = await fixture(t);
+  assert.equal((await f.req("GET", "/api/me", -2)).isServiceOwner, false);
+  assert.equal((await f.req("GET", "/api/me", -2)).isAnonymous, true);
+  assert.deepEqual(await f.req("GET", "/api/me", 900), {
+    status: 200,
+    isServiceOwner: true,
+    isAnonymous: false,
+    maxParticipantsLimit: 100,
+  });
+  assert.equal(
+    (
+      await f.app.inject({
+        method: "GET",
+        url: "/api/me",
+        headers: { "x-anon-id": "900" },
+      })
+    ).statusCode,
+    401,
+  );
+  assert.equal(
+    (
+      await f.req("POST", "/api/room/create", 900, {
+        encrypted: false,
+        maxParticipants: 0,
+      })
+    ).status,
+    400,
+  );
+  let token = await f.req("POST", "/api/token", 900, { room: "OTHERROOM" });
+  assert.equal(token.isAdmin, true);
+  assert.equal(token.isServiceOwner, true);
+  assert.equal(
+    JSON.parse((await f.claims(token.token)).metadata).role,
+    "service_owner",
+  );
+  token = await f.req("POST", "/api/token", -2, {
+    room: "OTHERROOM",
+    isServiceOwner: true,
+    isAdmin: true,
+  });
+  assert.equal(token.isServiceOwner, false);
+  assert.equal(token.isAdmin, false);
+  const proof = createHash("sha256")
+      .update("private-invitation-proof")
+      .digest("hex"),
+    accessHash = createHash("sha256").update(proof).digest("hex");
+  const room = await f.req("POST", "/api/room/create", -1, { accessHash });
+  assert.equal(
+    (await f.req("POST", "/api/token", 900, { room: room.code })).status,
+    403,
+  );
+  assert.equal(
+    (
+      await f.req("POST", "/api/token", 900, {
+        room: room.code,
+        accessProof: proof,
+      })
+    ).isAdmin,
+    true,
+  );
+});
+
+test("active room limits change without kicking current participants and reject stale over-capacity arrivals", async (t) => {
+  const f = await fixture(t);
+  for (const id of [-1, -2, 900]) f.connect(id);
+  assert.equal(
+    (
+      await f.req("PUT", "/api/admin/room/TESTROOM/limit", 900, {
+        maxParticipants: 12,
+      })
+    ).status,
+    200,
+  );
+  assert.equal(f.live.size, 3);
+  assert.equal(f.room.maxParticipants, 12);
+  assert.equal(
+    (await f.req("POST", "/api/token", -3, { room: "TESTROOM" })).status,
+    200,
+  );
+  assert.equal(
+    (
+      await f.req("PUT", "/api/admin/room/TESTROOM/limit", 900, {
+        maxParticipants: 2,
+      })
+    ).status,
+    200,
+  );
+  assert.equal(f.live.size, 3);
+  assert.equal(f.room.maxParticipants, 2);
+  assert.equal(
+    (await f.req("POST", "/api/token", -3, { room: "TESTROOM" })).status,
+    409,
+  );
+  assert.equal(
+    (await f.req("POST", "/api/token", -2, { room: "TESTROOM" })).status,
+    200,
+  );
+  assert.equal((await f.webhook(-2)).statusCode, 200);
+  assert.equal(f.live.has(f.identity(-2)), true);
+  f.connect(-3);
+  assert.equal((await f.webhook(-3)).statusCode, 200);
+  assert.equal(f.live.has(f.identity(-3)), false);
+  f.live.delete(f.identity(-2));
+  await f.webhook(-2, "TESTROOM", "participant_left");
+  f.connect(-2);
+  await f.webhook(-2);
+  assert.equal(f.live.has(f.identity(-2)), false);
+  assert.equal(
+    (
+      await f.req("PUT", "/api/admin/room/TESTROOM/limit", -1, {
+        maxParticipants: 9,
+      })
+    ).status,
+    400,
+  );
+  assert.equal(
+    (
+      await f.req("PUT", "/api/admin/room/TESTROOM/limit", -3, {
+        maxParticipants: 2,
+      })
+    ).status,
+    403,
+  );
+  assert.equal(
+    (
+      await f.req("PUT", "/api/admin/room/TESTROOM/limit", 900, {
+        maxParticipants: 101,
+      })
+    ).status,
+    400,
+  );
+  const state = await f.req("GET", "/api/room/TESTROOM/moderation", 900);
+  assert.equal(state.maxParticipants, 2);
+  assert.equal(state.maxAllowedParticipants, 100);
+});
+
+test("legacy media hard limits are upgraded only when the old room is empty", async (t) => {
+  const f = await fixture(t, { legacyHardcap: 8 });
+  f.connect(-2);
+  const result = await f.req("PUT", "/api/admin/room/TESTROOM/limit", 900, {
+    maxParticipants: 12,
+  });
+  assert.equal(result.status, 409);
+  assert.match(result.error, /Текущий разговор не будет прерван/);
+  assert.equal(f.live.size, 1);
+  assert.equal(f.room.maxParticipants, 8);
+  f.live.clear();
+  assert.equal(
+    (
+      await f.req("PUT", "/api/admin/room/TESTROOM/limit", 900, {
+        maxParticipants: 12,
+      })
+    ).status,
+    200,
+  );
+  assert.equal(f.mediaRooms.get("TESTROOM").maxParticipants, 100);
+});
+
+test("all public rooms remain listed during a persisted five-minute restart; custom limits survive API restarts", async (t) => {
+  const f = await fixture(t, {
+    persistentNames: "Общая 1|Общая 2|Общая 3",
+    now: Date.now(),
+  });
+  let listing = await f.req("GET", "/api/rooms/public");
+  assert.equal(listing.rooms.length, 3);
+  const target = listing.rooms[0],
+    code = encodeURIComponent(target.code),
+    record = f.rooms.find((r) => r.code === target.code);
+  assert.equal(
+    (await f.req("POST", `/api/room/${code}/close`, -1, {})).status,
+    403,
+  );
+  await f.req("PUT", `/api/admin/room/${code}/limit`, 900, {
+    maxParticipants: 17,
+  });
+  const started = f.now(),
+    closed = await f.req("POST", `/api/admin/room/${code}/close`, 900, {});
+  assert.equal(closed.status, 200);
+  assert.equal(new Date(closed.reopensAt).getTime() - started, 300000);
+  const deadline = new Date(closed.reopensAt).getTime();
+  assert.equal(record.isActive, false);
+  assert.equal(
+    (await f.req("POST", "/api/token", -2, { room: target.code })).status,
+    410,
+  );
+  listing = await f.req("GET", "/api/rooms/public");
+  assert.equal(listing.rooms.length, 3);
+  assert.equal(
+    listing.rooms.find((r) => r.code === target.code).isActive,
+    false,
+  );
+  assert.equal(
+    listing.rooms.find((r) => r.code === target.code).participantCount,
+    0,
+  );
+  const ownerListing = await f.req("GET", "/api/admin/rooms", 900);
+  assert.equal(
+    ownerListing.rooms.find((r) => r.code === target.code).maxParticipants,
+    17,
+  );
+  await f.req("PUT", `/api/admin/room/${code}/limit`, 900, {
+    maxParticipants: 19,
+  });
+  await f.restart();
+  assert.equal(record.maxParticipants, 19);
+  assert.equal(record.isActive, false);
+  assert.equal(new Date(record.reopensAt).getTime(), deadline);
+  f.advance(299999);
+  await f.req("GET", "/api/rooms/public");
+  assert.equal(record.isActive, false);
+  f.advance(1);
+  listing = await f.req("GET", "/api/rooms/public");
+  assert.equal(record.isActive, true);
+  assert.equal(record.reopensAt, null);
+  assert.equal(record.maxParticipants, 19);
+  assert.equal(listing.rooms.length, 3);
+  assert.equal(f.mediaRooms.get(target.code).maxParticipants, 100);
+  const stillPrivate = await f.req("POST", "/api/room/TESTROOM/close", -1, {});
+  assert.equal(stillPrivate.reopensAt, null);
+  f.advance(600000);
+  await f.restart();
+  assert.equal(
+    (await f.req("POST", "/api/token", -2, { room: "TESTROOM" })).status,
+    410,
+  );
 });

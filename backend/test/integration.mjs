@@ -6,8 +6,8 @@ import { TokenVerifier } from "livekit-server-sdk";
 import { randomBytes, createHash } from "node:crypto";
 if (!String(process.env.DATABASE_URL).includes("voicerooms_test"))
   throw Error("Requires isolated voicerooms_test database");
-const db = new PrismaClient(),
-  app = await buildApp({ prisma: db });
+const db = new PrismaClient();
+let app = await buildApp({ prisma: db });
 await app.ready();
 let checks = 0;
 const accessProof = createHash("sha256")
@@ -367,6 +367,113 @@ try {
     410,
   );
   checks++;
+  // Persistent public-room behavior uses a disposable named row, never a production room.
+  const publicCode = "PUBLIC-RESTART-" + randomBytes(5).toString("hex");
+  const publicRecord = await db.room.create({
+    data: {
+      code: publicCode,
+      name: "Проверка перезапуска",
+      isPersistent: true,
+      encrypted: false,
+      maxParticipants: 3,
+    },
+  });
+  const publicPath = encodeURIComponent(publicCode);
+  try {
+    const me = await req("GET", "/api/me", global);
+    assert.equal(me.data.isServiceOwner, true);
+    assert.equal(me.data.maxParticipantsLimit, 100);
+    assert.equal(
+      (await req("GET", "/api/me", foreign)).data.isServiceOwner,
+      false,
+    );
+    checks++;
+    assert.equal(
+      (
+        await req("PUT", `/api/admin/room/${publicPath}/limit`, global, {
+          maxParticipants: 19,
+        })
+      ).status,
+      200,
+    );
+    assert.equal(
+      (await db.room.findUnique({ where: { id: publicRecord.id } }))
+        .maxParticipants,
+      19,
+    );
+    checks++;
+    const beforeClose = Date.now(),
+      closed = await req(
+        "POST",
+        `/api/admin/room/${publicPath}/close`,
+        global,
+        {},
+      );
+    assert.equal(closed.status, 200);
+    assert.ok(Date.parse(closed.data.reopensAt) >= beforeClose + 299000);
+    assert.equal(
+      (await req("POST", "/api/token", foreign, { room: publicCode })).status,
+      410,
+    );
+    checks++;
+    let listed = (await req("GET", "/api/rooms/public")).data.rooms.find(
+      (item) => item.code === publicCode,
+    );
+    assert.equal(listed.isActive, false);
+    assert.ok(listed.reopensAt);
+    assert.equal(listed.participantCount, 0);
+    checks++;
+    assert.equal(
+      (
+        await req("PUT", `/api/admin/room/${publicPath}/limit`, global, {
+          maxParticipants: 23,
+        })
+      ).status,
+      200,
+    );
+    checks++;
+    // Advance only the disposable row's persisted deadline; don't wait five real minutes.
+    await db.room.update({
+      where: { id: publicRecord.id },
+      data: { reopensAt: new Date(Date.now() - 1000) },
+    });
+    await app.close();
+    app = await buildApp({ prisma: db });
+    await app.ready();
+    const reopened = await db.room.findUnique({
+      where: { id: publicRecord.id },
+    });
+    assert.equal(reopened.isActive, true);
+    assert.equal(reopened.reopensAt, null);
+    assert.equal(reopened.maxParticipants, 23);
+    checks++;
+    listed = (await req("GET", "/api/rooms/public")).data.rooms.find(
+      (item) => item.code === publicCode,
+    );
+    assert.equal(listed.isActive, true);
+    assert.equal(listed.maxParticipants, 23);
+    checks++;
+    const joined = await req("POST", "/api/token", global, {
+      room: publicCode,
+    });
+    assert.equal(joined.status, 200);
+    assert.equal(joined.data.isServiceOwner, true);
+    checks++;
+  } finally {
+    // Delete the isolated media row before its database record; no user rooms are affected.
+    const { RoomServiceClient } = await import("livekit-server-sdk");
+    await new RoomServiceClient(
+      process.env.LIVEKIT_HOST,
+      process.env.LIVEKIT_API_KEY,
+      process.env.LIVEKIT_API_SECRET,
+    )
+      .deleteRoom(publicCode)
+      .catch(() => {});
+    await db.roomParticipantName.deleteMany({
+      where: { roomId: publicRecord.id },
+    });
+    await db.room.delete({ where: { id: publicRecord.id } });
+  }
   console.log(
     JSON.stringify({
       passed: checks,

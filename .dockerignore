@@ -9,3 +9,9 @@ android
 **/uploads
 *.log
 run.py
+
+.impeccable/runtime
+.impeccable/questions
+mobile/**/build
+mobile/**/.gradle
+mobile/**/local.properties

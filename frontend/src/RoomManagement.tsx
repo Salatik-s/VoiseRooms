@@ -1,3 +1,4 @@
+import { useEffect, useState } from "react";
 import {
   Ban,
   Ellipsis,
@@ -12,6 +13,9 @@ export type ModerationState = {
   isLocked: boolean;
   bans: BanEntry[];
   members: { identity: string; microphoneBlocked: boolean }[];
+  maxParticipants?: number;
+  maxAllowedParticipants?: number;
+  isPersistent?: boolean;
 };
 export function MemberActions({
   name,
@@ -75,16 +79,27 @@ export function RoomControls({
   onLock,
   onUnban,
   onClose,
+  onCapacity,
 }: {
   state: ModerationState;
   pending?: boolean;
   onLock: () => void;
   onUnban: (identity: string) => void;
   onClose: () => void;
+  onCapacity?: (limit: number) => void;
 }) {
+  const [confirmClose, setConfirmClose] = useState(false);
   return (
     <section className="room-controls">
       <h3>Управление комнатой</h3>
+      {onCapacity && state.maxParticipants !== undefined && (
+        <RoomCapacity
+          current={state.maxParticipants}
+          max={state.maxAllowedParticipants || 100}
+          pending={pending}
+          onSave={onCapacity}
+        />
+      )}
       <button
         className="room-lock"
         role="switch"
@@ -134,13 +149,97 @@ export function RoomControls({
       <button
         className="close-room danger"
         disabled={pending}
-        onClick={onClose}
+        onClick={() => setConfirmClose(true)}
       >
         Закрыть комнату для всех
       </button>
+      {confirmClose && (
+        <div className="close-room-confirm">
+          <p>
+            {state.isPersistent
+              ? "Завершить разговор? Публичная комната откроется через 5 минут."
+              : "Закрыть комнату для всех? Приглашение перестанет действовать."}
+          </p>
+          <div>
+            <button
+              className="danger"
+              disabled={pending}
+              onClick={() => {
+                onClose();
+                setConfirmClose(false);
+              }}
+            >
+              Закрыть для всех
+            </button>
+            <button disabled={pending} onClick={() => setConfirmClose(false)}>
+              Отмена
+            </button>
+          </div>
+        </div>
+      )}
       <p className="management-note">
-        Разговор завершится. Приглашение перестанет действовать.
+        {state.isPersistent
+          ? "Разговор завершится. Публичная комната откроется через 5 минут."
+          : "Разговор завершится. Приглашение перестанет действовать."}
       </p>
     </section>
+  );
+}
+
+function RoomCapacity({
+  current,
+  max,
+  pending,
+  onSave,
+}: {
+  current: number;
+  max: number;
+  pending?: boolean;
+  onSave: (limit: number) => void;
+}) {
+  const [value, setValue] = useState(String(current)),
+    [error, setError] = useState("");
+  useEffect(() => setValue(String(current)), [current]);
+  return (
+    <form
+      noValidate
+      className="room-limit-form call-limit-form"
+      onSubmit={(e) => {
+        e.preventDefault();
+        const n = Number(value);
+        if (!Number.isInteger(n) || n < 2 || n > max) {
+          setError(`Укажите число от 2 до ${max}.`);
+          return;
+        }
+        setError("");
+        onSave(n);
+      }}
+    >
+      <label htmlFor="call-capacity">Места в комнате</label>
+      <div className="room-limit-input">
+        <input
+          id="call-capacity"
+          type="number"
+          min={2}
+          max={max}
+          inputMode="numeric"
+          value={value}
+          onChange={(e) => setValue(e.target.value)}
+          disabled={pending}
+        />
+        <button disabled={pending || Number(value) === current}>
+          Сохранить
+        </button>
+      </div>
+      {error && (
+        <p className="inline-error" role="alert">
+          {error}
+        </p>
+      )}
+      <p className="management-note">
+        Участники останутся в разговоре. Новый лимит применяется к следующим
+        входам.
+      </p>
+    </form>
   );
 }

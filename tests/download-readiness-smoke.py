@@ -210,6 +210,40 @@ def main():
         destination.mkdir(parents=True, exist_ok=True)
         (destination / "summary.json").write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
         print(json.dumps(report))
+    except Exception as error:
+        # CI fixtures contain synthetic values only. Do not print raw inspect,
+        # Config.Env, mounts, or the full Docker configuration.
+        diagnostics = []
+        for container in containers:
+            if container == backend:
+                continue
+            entry = {"container": container}
+            try:
+                details = inspect(container)
+                state = details.get("State", {})
+                entry["safeState"] = {key: state.get(key) for key in (
+                    "Status", "ExitCode", "OOMKilled", "Error"
+                )}
+                entry["publishedPorts"] = details.get("NetworkSettings", {}).get("Ports", {})
+                entry["requestedPorts"] = details.get("HostConfig", {}).get("PortBindings", {})
+                logs = docker("logs", "--tail", "80", container, check=False)
+                entry["logTail"] = (logs.stdout + logs.stderr)[-65536:].splitlines()
+            except Exception as diagnostic_error:
+                entry["diagnosticErrorType"] = type(diagnostic_error).__name__
+            diagnostics.append(entry)
+        failure = {
+            "pass": False, "syntheticOnly": True,
+            "errorType": type(error).__name__, "error": str(error)[:2000],
+            "checks": results, "frontendDiagnostics": diagnostics,
+        }
+        print("SYNTHETIC_FRONTEND_FAILURE " + json.dumps(failure), flush=True)
+        try:
+            destination = ROOT / ".qa/download-readiness"
+            destination.mkdir(parents=True, exist_ok=True)
+            (destination / "summary.json").write_text(json.dumps(failure, indent=2) + "\n", encoding="utf-8")
+        except Exception as diagnostic_error:
+            print("Unable to write synthetic evidence: " + type(diagnostic_error).__name__, flush=True)
+        raise
     finally:
         for container in reversed(containers):
             with contextlib.suppress(Exception):

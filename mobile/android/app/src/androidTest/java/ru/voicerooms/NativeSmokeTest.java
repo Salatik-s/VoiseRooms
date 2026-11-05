@@ -68,26 +68,48 @@ public class NativeSmokeTest {
                     activity
                         .web
                         .getViewTreeObserver()
-                        .addOnDrawListener(
-                            new android.view.ViewTreeObserver.OnDrawListener() {
-                              private boolean posted;
-
-                              @Override
-                              public void onDraw() {
-                                if (posted) return;
-                                posted = true;
-                                activity.web.post(
-                                    () -> {
-                                      activity.web.getViewTreeObserver().removeOnDrawListener(this);
-                                      rendered.countDown();
-                                    });
-                              }
-                            });
+                        .registerFrameCommitCallback(rendered::countDown);
                     activity.web.invalidate();
                   }
                 }));
     assertTrue("WebView did not render its updated frame", rendered.await(15, TimeUnit.SECONDS));
-    screenshot(name);
+    windowScreenshot(scenario, name);
+  }
+
+  private void windowScreenshot(ActivityScenario<MainActivity> scenario, String name)
+      throws Exception {
+    CountDownLatch copied = new CountDownLatch(1);
+    AtomicReference<android.graphics.Bitmap> frame = new AtomicReference<>();
+    java.util.concurrent.atomic.AtomicInteger result =
+        new java.util.concurrent.atomic.AtomicInteger(-1);
+    scenario.onActivity(
+        activity -> {
+          android.view.View decor = activity.getWindow().getDecorView();
+          android.graphics.Bitmap bitmap =
+              android.graphics.Bitmap.createBitmap(
+                  decor.getWidth(), decor.getHeight(), android.graphics.Bitmap.Config.ARGB_8888);
+          frame.set(bitmap);
+          android.view.PixelCopy.request(
+              activity.getWindow(),
+              bitmap,
+              code -> {
+                result.set(code);
+                copied.countDown();
+              },
+              new android.os.Handler(android.os.Looper.getMainLooper()));
+        });
+    assertTrue("Window frame was not copied", copied.await(15, TimeUnit.SECONDS));
+    assertEquals(android.view.PixelCopy.SUCCESS, result.get());
+    File dir =
+        InstrumentationRegistry.getInstrumentation().getTargetContext().getExternalFilesDir(null);
+    assertNotNull(dir);
+    File screenshot = new File(dir, name + ".png");
+    try (java.io.OutputStream stream = new java.io.FileOutputStream(screenshot)) {
+      assertTrue(frame.get().compress(android.graphics.Bitmap.CompressFormat.PNG, 100, stream));
+    } finally {
+      frame.get().recycle();
+    }
+    uploadScreenshot(screenshot, name);
   }
 
   private void tap(ActivityScenario<MainActivity> scenario, String selector) throws Exception {
@@ -132,6 +154,10 @@ public class NativeSmokeTest {
     assertNotNull(dir);
     File screenshot = new File(dir, name + ".png");
     assertTrue(device.takeScreenshot(screenshot));
+    uploadScreenshot(screenshot, name);
+  }
+
+  private void uploadScreenshot(File screenshot, String name) throws Exception {
     java.net.HttpURLConnection upload =
         (java.net.HttpURLConnection)
             new java.net.URL(TrustedOrigin.TEST_ORIGIN + "/__native_test_screenshot?name=" + name)
